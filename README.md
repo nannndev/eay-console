@@ -2,8 +2,17 @@
 
 The web console for [eay-gateway](https://github.com/nannndev/eay-gateway). A single
 `index.html` with no build step and no dependencies. It talks to the gateway's API like any other
-client: overview, live activity and subagents, a streaming playground, providers and OAuth logins,
-MCP tools, routing, skills, agents and keys.
+client:
+
+- **Overview:** traffic, cost and recent requests
+- **Activity:** live request and subagent phases, spawn and cancel subagents, and approve or deny
+  tool calls that wait for you
+- **Playground:** streaming chat in OpenAI, Anthropic or Responses format with a live route trace,
+  plus embeddings, images, speech and transcription
+- **Providers:** subscription logins, API keys, quotas and models
+- **MCP tools:** add or import servers and run a tool by hand
+- **Routing, Skills, Agents, Keys:** including tool policies (read-only, allow/deny, approval,
+  how many subagents a model may start) and saved sessions
 
 ## Use it
 
