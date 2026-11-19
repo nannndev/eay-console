@@ -298,10 +298,26 @@
           </table></div>
         </div>
       </div>
+      <div class="grid g2" style="margin-top:14px">
+        <div class="card">
+          <h2>Agents</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Agent</th><th>Requests</th><th>Tokens</th><th>Est. cost</th><th>Models</th></tr></thead>
+            <tbody id="usage-agents"></tbody>
+          </table></div>
+        </div>
+        <div class="card">
+          <h2>Teams</h2>
+          <div class="table-wrap"><table>
+            <thead><tr><th>Team</th><th>Requests</th><th>Tokens</th><th>Est. cost</th><th>Who / models</th></tr></thead>
+            <tbody id="usage-teams"></tbody>
+          </table></div>
+        </div>
+      </div>
       <div class="card">
         <h2>Recent requests</h2>
         <div class="table-wrap"><table>
-          <thead><tr><th>Time</th><th>Model</th><th>Provider</th><th>Key</th><th>Tokens</th><th>Latency</th><th>Status</th></tr></thead>
+          <thead><tr><th>Time</th><th>Agent</th><th>Model</th><th>Provider</th><th>Key</th><th>Tokens</th><th>Latency</th><th>Status</th></tr></thead>
           <tbody id="usage-body"></tbody>
         </table></div>
       </div>
@@ -652,6 +668,11 @@
     <section id="tab-agents" class="panel">
       <div class="page-head"><div><h1>Agents</h1><p>A model, skills and a personality under one id: <span class="mono">agent/&lt;name&gt;</span>.</p></div></div>
       <div class="card">
+        <h2>Templates</h2>
+        <p class="hint" style="margin:0 0 4px">Starter crews. Add saves the agents and a team. The model is auto. A name you already saved stays as it is. Only the lead may start subagents. In the playground, set the model to <span class="mono">agent/&lt;lead&gt;</span> and the team to the new id.</p>
+        <div id="crew-list"></div>
+      </div>
+      <div class="card">
         <h2>Agent editor</h2>
         <div class="row" style="margin-bottom:10px">
           <input id="ag-name" placeholder="Name, e.g. senior-rust" />
@@ -853,7 +874,7 @@
     restartActivity(); showTab(currentTab);
   }
   async function api(url, { method = 'GET', body, headers = {} } = {}) {
-    const isAdmin = url.startsWith('/gateway/admin');
+    const isAdmin = url.startsWith('/gateway/') && !url.startsWith('/gateway/v1') && !url.startsWith('/gateway/health');
     let r;
     try {
       r = await fetch(gw(url), {
@@ -933,7 +954,7 @@
   async function loadOverview() {
     const tz = -new Date().getTimezoneOffset();
     const [s, u, a] = await Promise.all([
-      api('/gateway/admin/stats'), api('/gateway/admin/usage?limit=25'), api(`/gateway/admin/analytics?days=14&tz_offset_min=${tz}`),
+      api('/gateway/stats'), api('/gateway/usage?limit=25'), api(`/gateway/analytics?days=14&tz_offset_min=${tz}`),
     ]);
     const st = s.data || {};
     const days = a.data?.days || [];
@@ -964,20 +985,43 @@
       <tr><td class="mono">${esc(m.model)}</td><td class="mono dim">${esc(m.provider || '–')}</td><td class="mono">${fmtN(m.tokens)}</td><td class="mono">${m.cost ? '$' + m.cost.toFixed(3) : '–'}</td></tr>`).join('')
       || emptyRow(4, 'No traffic yet. Send a message from the Playground.');
 
+    const modelLine = (list) => (list || []).map((m) => esc(`${m.provider ? m.provider + '/' : ''}${m.model || 'auto'}`)).join(', ') || '–';
+    const costCell = (n) => (n ? '$' + n.toFixed(3) : '–');
+    $('#usage-agents').innerHTML = (a.data?.agents || []).map((agent) => `
+      <tr>
+        <td class="mono">${esc(agent.agent)}</td>
+        <td class="mono">${fmtN(agent.requests)}</td>
+        <td class="mono">${fmtN(agent.tokens)}</td>
+        <td class="mono">${costCell(agent.cost)}</td>
+        <td class="mono dim">${modelLine(agent.models)}</td>
+      </tr>`).join('') || emptyRow(5, 'No agent traffic in this range.');
+    $('#usage-teams').innerHTML = (a.data?.teams || []).map((team) => {
+      const who = (team.agents || []).map((agent) => esc(agent.agent)).join(', ');
+      const title = team.name && team.name !== team.id ? `${esc(team.name)} <span class="dim">${esc(team.id)}</span>` : esc(team.id);
+      return `<tr>
+        <td class="mono">${title}</td>
+        <td class="mono">${fmtN(team.requests)}</td>
+        <td class="mono">${fmtN(team.tokens)}</td>
+        <td class="mono">${costCell(team.cost)}</td>
+        <td class="mono dim">${who || '–'}<br>${modelLine(team.models)}</td>
+      </tr>`;
+    }).join('') || emptyRow(5, 'No team traffic in this range.');
+
     $('#usage-body').innerHTML = (u.data?.usage || []).map((x) => `
       <tr>
         <td class="mono" title="${esc(new Date(x.ts * 1000).toLocaleString())}">${fmtTime(x.ts)}</td>
+        <td class="mono">${esc(x.agent || '–')}</td>
         <td class="mono">${esc(x.model || 'auto')}</td>
         <td class="mono">${esc(x.provider || '–')}</td>
         <td class="mono dim">${esc(x.key_name || '–')}</td>
         <td class="mono">${fmtN((x.input_tokens || 0) + (x.output_tokens || 0))}</td>
         <td class="mono">${fmtMs(x.duration_ms)}</td>
-        <td><span class="pill ${x.status === 'success' ? 'on' : 'bad'}" title="${esc(x.error || '')}">${esc(x.status)}</span></td>
-      </tr>`).join('') || emptyRow(7, 'No requests yet.');
+        <td><span class="pill ${x.status === 'success' || x.status === 'ok' ? 'on' : 'bad'}" title="${esc(x.error || '')}">${esc(x.status)}</span></td>
+      </tr>`).join('') || emptyRow(8, 'No requests yet.');
   }
   async function clearUsage() {
     if (!confirm('Delete the whole usage log? Stats and charts reset to zero.')) return;
-    act(api('/gateway/admin/usage', { method: 'DELETE' }), 'Usage log cleared', loadOverview);
+    act(api('/gateway/usage', { method: 'DELETE' }), 'Usage log cleared', loadOverview);
   }
 
   // ---- Activity ---------------------------------------------------------------
@@ -1013,7 +1057,7 @@
     activityAbort = new AbortController();
     const state = $('#stream-state');
     try {
-      const resp = await fetch(gw('/gateway/admin/events'), { headers: adminHeaders(), signal: activityAbort.signal });
+      const resp = await fetch(gw('/gateway/events'), { headers: adminHeaders(), signal: activityAbort.signal });
       if (resp.status === 401) { $('#token-bar').classList.add('show'); state.textContent = 'needs admin token'; return; }
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       state.textContent = 'live'; state.className = 'pill on';
@@ -1036,7 +1080,7 @@
 
   const FINISHED = ['completed', 'failed', 'cancelled'];
   async function loadApprovals() {
-    const r = await api('/gateway/admin/approvals');
+    const r = await api('/gateway/approvals');
     const list = r.data?.approvals || [];
     $('#approvals-card').hidden = !list.length;
     $('#nav-approvals').textContent = list.length ? `${list.length} to approve` : '';
@@ -1054,16 +1098,16 @@
       </div>`).join('');
   }
   const answerApproval = (id, approve) =>
-    act(api(`/gateway/admin/approvals/${encodeURIComponent(id)}`, { method: 'POST', body: { approve } }), approve ? 'Approved' : 'Denied', loadApprovals);
+    act(api(`/gateway/approvals/${encodeURIComponent(id)}`, { method: 'POST', body: { approve } }), approve ? 'Approved' : 'Denied', loadApprovals);
   const phasePill = (p) => `<span class="pill ${p === 'failed' ? 'bad' : FINISHED.includes(p) ? '' : 'on'}">${esc(p)}</span>`;
   async function loadSubagents() {
     renderActivity();
-    const [r, m] = await Promise.all([api('/gateway/admin/subagents'), api('/gateway/admin/mcp')]);
+    const [r, m] = await Promise.all([api('/gateway/subagents'), api('/gateway/mcp')]);
     const sel = $('#sub-mcp');
     const picked = new Set([...sel.selectedOptions].map((o) => o.value));
     sel.innerHTML = (m.data?.mcp_servers || []).filter((x) => x.enabled)
       .map((x) => `<option value="${esc(x.name)}" ${picked.has(x.name) ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-    renderRunTree(r.ok ? (await api('/gateway/admin/subagents/tree')).data?.tree || [] : []);
+    renderRunTree(r.ok ? (await api('/gateway/subagents/tree')).data?.tree || [] : []);
   }
   const elapsed = (s) => {
     const end = FINISHED.includes(s.phase) ? s.updated_at : Date.now() / 1000;
@@ -1118,17 +1162,17 @@
     if (mcp.length) body.mcp = mcp;
     const key = $('#sub-key').value.trim(); if (key) body.api_key = key;
     const parent = $('#sub-parent').value.trim(); if (parent) body.parent_id = parent;
-    const r = await act(api('/gateway/admin/subagents', { method: 'POST', body }), 'Subagent started', loadSubagents);
+    const r = await act(api('/gateway/subagents', { method: 'POST', body }), 'Subagent started', loadSubagents);
     if (r.ok) { $('#sub-prompt').value = ''; $('#sub-parent').value = ''; }
   }
-  const cancelSubagent = (id) => act(api(`/gateway/admin/subagents/${encodeURIComponent(id)}/cancel`, { method: 'POST' }), 'Subagent cancelled', loadSubagents);
-  const deleteSubagent = (id) => act(api(`/gateway/admin/subagents/${encodeURIComponent(id)}`, { method: 'DELETE' }), null, loadSubagents);
+  const cancelSubagent = (id) => act(api(`/gateway/subagents/${encodeURIComponent(id)}/cancel`, { method: 'POST' }), 'Subagent cancelled', loadSubagents);
+  const deleteSubagent = (id) => act(api(`/gateway/subagents/${encodeURIComponent(id)}`, { method: 'DELETE' }), null, loadSubagents);
 
   // ---- Providers --------------------------------------------------------------
   let usageMap = {};
   const LOCAL_IMPORT = ['kiro', 'codex', 'commandcode', 'xiaomi-mimo'];
   async function loadProviders() {
-    const [p, a] = await Promise.all([api('/gateway/admin/providers'), api('/gateway/admin/accounts')]);
+    const [p, a] = await Promise.all([api('/gateway/providers'), api('/gateway/accounts')]);
     const plist = p.data?.providers || [];
     const oplist = a.data?.providers || [];
     const keyed = plist.filter((x) => x.needs_key !== false);
@@ -1181,10 +1225,10 @@
   }
   async function loadOAuthUsage() {
     toast('Checking quotas…');
-    const r = await api('/gateway/admin/accounts/usage?force=true');
+    const r = await api('/gateway/accounts/usage?force=true');
     usageMap = {};
     (r.data?.accounts || []).forEach((u) => { usageMap[u.id] = u; });
-    const a = await api('/gateway/admin/accounts');
+    const a = await api('/gateway/accounts');
     renderAccounts(a.data?.accounts || []);
   }
   async function moveAccount(provider, id, dir) {
@@ -1192,7 +1236,7 @@
     const i = ids.indexOf(id); const j = i + dir;
     if (j < 0 || j >= ids.length) return;
     [ids[i], ids[j]] = [ids[j], ids[i]];
-    act(api(`/gateway/admin/accounts/${encodeURIComponent(provider)}/reorder`, { method: 'POST', body: { account_ids: ids } }), null, loadProviders);
+    act(api(`/gateway/accounts/${encodeURIComponent(provider)}/reorder`, { method: 'POST', body: { account_ids: ids } }), null, loadProviders);
   }
   let oauthTimer = null;
   async function startOAuth() {
@@ -1200,14 +1244,14 @@
     const box = $('#oauth-flow');
     clearTimeout(oauthTimer);
     box.hidden = false; box.textContent = `Starting ${p} login…`;
-    const r = await api(`/gateway/admin/accounts/${encodeURIComponent(p)}/start`, { method: 'POST', body: {} });
+    const r = await api(`/gateway/accounts/${encodeURIComponent(p)}/start`, { method: 'POST', body: {} });
     if (!r.ok) { box.textContent = errMsg(r); return; }
     const d = r.data;
     if (d.kind === 'device') {
       box.innerHTML = `Open <a href="${esc(d.verification_uri)}" target="_blank" rel="noopener">${esc(d.verification_uri)}</a> and enter <strong style="font-size:15px;letter-spacing:.1em">${esc(d.user_code)}</strong><div class="dim" id="oauth-poll-st" style="margin-top:6px">Waiting for you to approve…</div>`;
       let interval = (d.interval || 5) * 1000;
       const poll = async () => {
-        const pr = await api(`/gateway/admin/accounts/${encodeURIComponent(p)}/poll`, { method: 'POST', body: { session_id: d.session_id } });
+        const pr = await api(`/gateway/accounts/${encodeURIComponent(p)}/poll`, { method: 'POST', body: { session_id: d.session_id } });
         const s = pr.data?.status;
         if (pr.ok && s && s !== 'pending' && s !== 'slow_down') { box.textContent = `Connected ${p}.`; loadProviders(); return; }
         if (!pr.ok || s === 'expired' || s === 'error') { box.textContent = `Login did not finish: ${errMsg(pr)}`; return; }
@@ -1222,7 +1266,7 @@
       // The callback listener may finish the login itself; watch for the new account.
       const before = (renderAccounts.last || []).length;
       const watch = async (n) => {
-        const a = await api('/gateway/admin/accounts');
+        const a = await api('/gateway/accounts');
         if ((a.data?.accounts || []).length > before) { box.textContent = `Connected ${p}.`; renderAccounts(a.data.accounts); return; }
         if (n > 0 && !box.hidden) oauthTimer = setTimeout(() => watch(n - 1), 3000);
       };
@@ -1230,56 +1274,56 @@
     }
   }
   async function completeOAuth(p, sid) {
-    const r = await api(`/gateway/admin/accounts/${encodeURIComponent(p)}/complete`, { method: 'POST', body: { session_id: sid, callback: $('#oauth-cb').value.trim() } });
+    const r = await api(`/gateway/accounts/${encodeURIComponent(p)}/complete`, { method: 'POST', body: { session_id: sid, callback: $('#oauth-cb').value.trim() } });
     $('#oauth-flow').textContent = r.ok ? `Connected ${p}.` : errMsg(r);
     if (r.ok) { clearTimeout(oauthTimer); loadProviders(); }
   }
   async function testAccount(p, id) {
     toast('Sending a test request…');
-    const r = await api(`/gateway/admin/accounts/${encodeURIComponent(p)}/test`, { method: 'POST', body: { account_id: id } });
+    const r = await api(`/gateway/accounts/${encodeURIComponent(p)}/test`, { method: 'POST', body: { account_id: id } });
     toast(r.ok ? `Works: ${r.data?.message || r.data?.status || 'ok'}` : errMsg(r), !r.ok);
   }
-  const deleteAccount = (p, id) => confirm('Remove this account from the gateway?') && act(api(`/gateway/admin/accounts/${encodeURIComponent(p)}/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Account removed', loadProviders);
-  const toggleAccount = (p, id) => act(api(`/gateway/admin/accounts/${encodeURIComponent(p)}/${encodeURIComponent(id)}/toggle`, { method: 'PATCH', body: {} }), null, loadProviders);
+  const deleteAccount = (p, id) => confirm('Remove this account from the gateway?') && act(api(`/gateway/accounts/${encodeURIComponent(p)}/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Account removed', loadProviders);
+  const toggleAccount = (p, id) => act(api(`/gateway/accounts/${encodeURIComponent(p)}/${encodeURIComponent(id)}/toggle`, { method: 'PATCH', body: {} }), null, loadProviders);
   function onConnProvider() { $('#conn-import').hidden = !LOCAL_IMPORT.includes($('#conn-provider').value); }
   async function connectProvider() {
     const id = $('#conn-provider').value;
     const api_key = $('#conn-key').value.trim();
     if (!api_key) return toast('Paste an API key first.', true);
     $('#conn-msg').textContent = 'Checking the key with the provider…';
-    const r = await api(`/gateway/admin/providers/${encodeURIComponent(id)}/connect`, { method: 'POST', body: { api_key, base_url: $('#conn-url').value.trim() || undefined } });
+    const r = await api(`/gateway/providers/${encodeURIComponent(id)}/connect`, { method: 'POST', body: { api_key, base_url: $('#conn-url').value.trim() || undefined } });
     $('#conn-msg').textContent = r.ok ? `Connected ${id}.` : errMsg(r);
     if (r.ok) { $('#conn-key').value = ''; loadProviders(); }
   }
   async function importLocal() {
     const id = $('#conn-provider').value;
-    const r = await api(`/gateway/admin/providers/${encodeURIComponent(id)}/import`, { method: 'POST', body: {} });
+    const r = await api(`/gateway/providers/${encodeURIComponent(id)}/import`, { method: 'POST', body: {} });
     $('#conn-msg').textContent = r.ok ? `Imported ${id} from its local login.` : errMsg(r);
     if (r.ok) loadProviders();
   }
   async function addExtraKey(id) {
     const api_key = prompt(`Another ${id} API key (requests rotate between keys):`);
     if (!api_key) return;
-    act(api(`/gateway/admin/providers/${encodeURIComponent(id)}/keys`, { method: 'POST', body: { api_key: api_key.trim() } }), 'Key added', loadProviders);
+    act(api(`/gateway/providers/${encodeURIComponent(id)}/keys`, { method: 'POST', body: { api_key: api_key.trim() } }), 'Key added', loadProviders);
   }
-  async function syncModels(id) { toast(`Syncing ${id} models…`); act(api(`/gateway/admin/providers/${encodeURIComponent(id)}/models/sync`, { method: 'POST', body: {} }), 'Models synced', loadProviders); }
-  const toggleProvider = (id) => act(api(`/gateway/admin/providers/${encodeURIComponent(id)}/toggle`, { method: 'PATCH', body: {} }), null, loadProviders);
-  const disconnectProvider = (id) => confirm(`Disconnect ${id} and forget its key?`) && act(api(`/gateway/admin/providers/${encodeURIComponent(id)}/disconnect`, { method: 'POST', body: {} }), 'Disconnected', loadProviders);
+  async function syncModels(id) { toast(`Syncing ${id} models…`); act(api(`/gateway/providers/${encodeURIComponent(id)}/models/sync`, { method: 'POST', body: {} }), 'Models synced', loadProviders); }
+  const toggleProvider = (id) => act(api(`/gateway/providers/${encodeURIComponent(id)}/toggle`, { method: 'PATCH', body: {} }), null, loadProviders);
+  const disconnectProvider = (id) => confirm(`Disconnect ${id} and forget its key?`) && act(api(`/gateway/providers/${encodeURIComponent(id)}/disconnect`, { method: 'POST', body: {} }), 'Disconnected', loadProviders);
   async function loadModelEditor(id, details) {
     const el = details.querySelector('.model-editor');
-    const r = await api(`/gateway/admin/providers/${encodeURIComponent(id)}/models`);
+    const r = await api(`/gateway/providers/${encodeURIComponent(id)}/models`);
     const custom = new Set(r.data?.custom_models || []);
     el.innerHTML = `<div class="chips">${(r.data?.models || []).map((m) => `<span class="chip">${esc(m)}${custom.has(m) ? `<button title="Remove" onclick="removeModel(${attr(id)}, ${attr(m)}, this)">×</button>` : '<span style="width:6px"></span>'}</span>`).join('')}</div>
       <div class="row" style="margin-top:8px"><input placeholder="Add a model id" class="grow" onkeydown="if(event.key==='Enter')addModel(${attr(id)}, this)" /><button class="ghost" onclick="addModel(${attr(id)}, this.previousElementSibling)">Add</button></div>`;
   }
   async function addModel(id, input) {
     const model = input.value.trim(); if (!model) return;
-    const r = await act(api(`/gateway/admin/providers/${encodeURIComponent(id)}/models`, { method: 'POST', body: { model } }), `Added ${model}`);
+    const r = await act(api(`/gateway/providers/${encodeURIComponent(id)}/models`, { method: 'POST', body: { model } }), `Added ${model}`);
     if (r.ok) loadModelEditor(id, input.closest('details'));
   }
   async function removeModel(id, model, btn) {
     const details = btn.closest('details');
-    const r = await act(api(`/gateway/admin/providers/${encodeURIComponent(id)}/models`, { method: 'DELETE', body: { model } }), `Removed ${model}`);
+    const r = await act(api(`/gateway/providers/${encodeURIComponent(id)}/models`, { method: 'DELETE', body: { model } }), `Removed ${model}`);
     if (r.ok) loadModelEditor(id, details);
   }
 
@@ -1312,18 +1356,18 @@
     const body = transport === 'http'
       ? { name, transport, url: $('#mcp-url').value.trim() || null, headers: kv }
       : { name, transport, command: $('#mcp-cmd').value.trim() || null, args: splitArgs($('#mcp-args').value.trim()), env: kv };
-    const r = await api('/gateway/admin/mcp', { method: 'POST', body });
+    const r = await api('/gateway/mcp', { method: 'POST', body });
     if (!r.ok) { $('#mcp-msg').textContent = errMsg(r); return; }
     $('#mcp-msg').textContent = `Saved ${name}. Connecting…`;
     await loadMcp();
-    const t = await api(`/gateway/admin/mcp/${encodeURIComponent(name)}/tools`, { method: 'POST', body: {} });
+    const t = await api(`/gateway/mcp/${encodeURIComponent(name)}/tools`, { method: 'POST', body: {} });
     $('#mcp-msg').textContent = t.ok ? `Saved ${name}: ${(t.data.tools || []).length} tools ready.` : `Saved ${name}, but it did not answer: ${errMsg(t)}`;
     if (t.ok) renderMcpTools(name, t.data.tools || []);
   }
   async function importMcp() {
     let cfg;
     try { cfg = JSON.parse($('#mcp-import').value); } catch { $('#mcp-import-msg').textContent = 'That is not valid JSON.'; return; }
-    const r = await api('/gateway/admin/mcp/import', { method: 'POST', body: cfg });
+    const r = await api('/gateway/mcp/import', { method: 'POST', body: cfg });
     if (!r.ok) { $('#mcp-import-msg').textContent = errMsg(r); return; }
     const errs = (r.data.errors || []).map((e) => `${e.name}: ${e.error}`);
     $('#mcp-import-msg').textContent = `Imported ${r.data.imported.length}: ${r.data.imported.join(', ') || 'none'}${errs.length ? ' · Skipped ' + errs.join('; ') : ''}`;
@@ -1331,7 +1375,7 @@
   }
   const mcpTools = {};
   async function loadMcp() {
-    const r = await api('/gateway/admin/mcp');
+    const r = await api('/gateway/mcp');
     const list = r.data?.mcp_servers || [];
     $('#nav-mcp').textContent = list.filter((m) => m.enabled).length || '';
     $('#mcp-list').innerHTML = list.map((m) => `
@@ -1361,7 +1405,7 @@
   async function listMcpTools(name) {
     const card = document.getElementById('mcp-card-' + name);
     card.querySelector('.mcp-tools').innerHTML = '<div class="msg">Starting server and listing tools…</div>';
-    const r = await api(`/gateway/admin/mcp/${encodeURIComponent(name)}/tools`, { method: 'POST', body: {} });
+    const r = await api(`/gateway/mcp/${encodeURIComponent(name)}/tools`, { method: 'POST', body: {} });
     if (!r.ok) { card.querySelector('.mcp-tools').innerHTML = `<div class="msg" style="color:var(--bad)">${esc(errMsg(r))}</div>`; return; }
     renderMcpTools(name, r.data.tools || []);
   }
@@ -1396,19 +1440,19 @@
     try { args = JSON.parse(document.getElementById(`mcp-args-${name}-${i}`).value || '{}'); } catch { return toast('Arguments must be valid JSON.', true); }
     const st = document.getElementById(`mcp-st-${name}-${i}`); const out = document.getElementById(`mcp-out-${name}-${i}`);
     st.textContent = 'Running…';
-    const r = await api(`/gateway/admin/mcp/${encodeURIComponent(name)}/call`, { method: 'POST', body: { tool, arguments: args } });
+    const r = await api(`/gateway/mcp/${encodeURIComponent(name)}/call`, { method: 'POST', body: { tool, arguments: args } });
     out.hidden = false;
     if (!r.ok) { st.textContent = 'Failed'; out.textContent = errMsg(r); return; }
     st.textContent = `${r.data.ok ? 'Done' : 'Tool reported an error'} in ${fmtMs(r.data.duration_ms)}`;
     out.style.color = r.data.ok ? '' : 'var(--bad)';
     out.textContent = r.data.output;
   }
-  const toggleMcp = (n) => act(api(`/gateway/admin/mcp/${encodeURIComponent(n)}/toggle`, { method: 'PATCH' }), null, loadMcp);
-  const deleteMcp = (n) => confirm(`Delete MCP server ${n}?`) && act(api(`/gateway/admin/mcp/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Deleted', () => { delete mcpTools[n]; loadMcp(); });
+  const toggleMcp = (n) => act(api(`/gateway/mcp/${encodeURIComponent(n)}/toggle`, { method: 'PATCH' }), null, loadMcp);
+  const deleteMcp = (n) => confirm(`Delete MCP server ${n}?`) && act(api(`/gateway/mcp/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Deleted', () => { delete mcpTools[n]; loadMcp(); });
 
   // ---- Routing ----------------------------------------------------------------
   async function loadRouting() {
-    const [s, c] = await Promise.all([api('/gateway/admin/settings'), api('/gateway/admin/combos')]);
+    const [s, c] = await Promise.all([api('/gateway/settings'), api('/gateway/combos')]);
     const st = s.data?.settings || {};
     $('#rt-strategy').value = st.routing_strategy || 'priority';
     $('#rt-fallback').value = st.fallback_order || 'model_first';
@@ -1434,21 +1478,21 @@
       cooldown_secs: num('#rt-cooldown') ?? 60, auto_models_per_provider: num('#rt-per') ?? 2,
       provider_priority: csv($('#rt-priority').value),
     };
-    const r = await api('/gateway/admin/settings', { method: 'POST', body });
+    const r = await api('/gateway/settings', { method: 'POST', body });
     $('#rt-msg').textContent = r.ok ? 'Routing saved.' : errMsg(r);
     if (r.ok) loadRouting();
   }
   function editCombo(name, targets) { $('#cb-name').value = name; $('#cb-targets').value = targets.join(', '); $('#cb-targets').focus(); }
   async function saveCombo() {
-    const r = await act(api('/gateway/admin/combos', { method: 'POST', body: { name: $('#cb-name').value.trim(), targets: csv($('#cb-targets').value) } }), 'Combo saved', loadRouting);
+    const r = await act(api('/gateway/combos', { method: 'POST', body: { name: $('#cb-name').value.trim(), targets: csv($('#cb-targets').value) } }), 'Combo saved', loadRouting);
     if (r.ok) { $('#cb-name').value = ''; $('#cb-targets').value = ''; }
   }
-  const deleteCombo = (n) => act(api(`/gateway/admin/combos/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Combo deleted', loadRouting);
+  const deleteCombo = (n) => act(api(`/gateway/combos/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Combo deleted', loadRouting);
 
   // ---- Skills -----------------------------------------------------------------
   let skillsCache = [];
   async function loadSkills() {
-    const r = await api('/gateway/admin/skills');
+    const r = await api('/gateway/skills');
     skillsCache = r.data?.skills || [];
     $('#skills-body').innerHTML = skillsCache.map((s) => `
       <tr>
@@ -1469,11 +1513,11 @@
   }
   async function saveSkill() {
     const body = { name: $('#skill-name').value.trim(), description: $('#skill-desc').value.trim(), prompt: $('#skill-prompt').value.trim() };
-    const r = await act(api('/gateway/admin/skills', { method: 'POST', body }), 'Skill saved', loadSkills);
+    const r = await act(api('/gateway/skills', { method: 'POST', body }), 'Skill saved', loadSkills);
     if (r.ok) ['#skill-name', '#skill-desc', '#skill-prompt'].forEach((id) => ($(id).value = ''));
   }
-  const toggleSkill = (n) => act(api(`/gateway/admin/skills/${encodeURIComponent(n)}/toggle`, { method: 'PATCH' }), null, loadSkills);
-  const deleteSkill = (n) => confirm(`Delete skill ${n}?`) && act(api(`/gateway/admin/skills/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Skill deleted', loadSkills);
+  const toggleSkill = (n) => act(api(`/gateway/skills/${encodeURIComponent(n)}/toggle`, { method: 'PATCH' }), null, loadSkills);
+  const deleteSkill = (n) => confirm(`Delete skill ${n}?`) && act(api(`/gateway/skills/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Skill deleted', loadSkills);
   function uploadSkillFile(input) {
     const file = input.files?.[0]; if (!file) return;
     const reader = new FileReader();
@@ -1519,10 +1563,82 @@
     p.max_subagents ? `up to ${p.max_subagents} subagents` : '',
   ].filter(Boolean).join(' · ');
 
+  // Starter crews. The first agent is the lead and the only one allowed to delegate.
+  const CREWS = [
+    {
+      id: 'app', title: 'App', team: 'app',
+      blurb: 'A lead, a builder, and a reviewer for one feature.',
+      agents: [
+        { name: 'app-lead', subs: 3, description: 'Splits a feature into tasks and delegates them. Answers the user.', personality: 'You lead a small app crew. Restate the goal in one or two lines, then delegate each piece to a teammate. Do the work yourself only when no teammate fits. When they report back, answer the user with what changed and what is still open.' },
+        { name: 'app-builder', description: 'Writes and edits code for one assigned task.', personality: 'You build the task you are given. Change only what that task needs. Report the files you touched and anything you left unfinished.' },
+        { name: 'app-reviewer', description: 'Checks a change for bugs, missed cases, and risk.', personality: 'You review the change you are given. Name concrete problems and where they show up. Skip praise and style notes.' },
+      ],
+    },
+    {
+      id: 'research', title: 'Research', team: 'research',
+      blurb: 'A lead, a reader, and a writer.',
+      agents: [
+        { name: 'research-lead', subs: 2, description: 'Splits a question into lookups and turns the notes into one answer.', personality: 'You lead a small research crew. Ask a teammate for the facts, then ask another to write the answer. Do the work yourself only when no teammate fits. Give the user one short answer and say what is still unsure.' },
+        { name: 'research-reader', description: 'Gathers the facts for one question the lead assigns.', personality: 'You gather the facts for the question you are given. Report what you found and what you could not check. Do not write the final answer.' },
+        { name: 'research-writer', description: 'Turns gathered notes into a short answer.', personality: 'You write the answer from the notes you are given. Stay with those notes. Mark anything the notes do not support.' },
+      ],
+    },
+  ];
+  let installingCrew = false;
+  function renderCrews() {
+    const have = new Set(agentsCache.map((a) => a.name));
+    const box = $('#crew-list');
+    if (!box) return;
+    box.innerHTML = CREWS.map((c) => {
+      const ready = c.agents.filter((a) => have.has(a.name)).length;
+      return `<div class="row" style="justify-content:space-between;align-items:flex-start;padding:8px 0;border-top:1px solid var(--border)">
+        <div style="min-width:0">
+          <strong>${esc(c.title)}</strong> <span class="mono dim">${esc(c.team)}</span>
+          <div class="hint">${esc(c.blurb)}</div>
+          <div class="mono dim">${c.agents.map((a) => esc(a.name) + (a.subs ? ' · lead' : '')).join(', ')}${ready ? ` · ${ready} saved` : ''}</div>
+        </div>
+        <button class="btn" onclick="installCrew(${attr(c.id)})" ${installingCrew ? 'disabled' : ''}>${ready === c.agents.length ? 'Add team' : 'Add'}</button>
+      </div>`;
+    }).join('');
+  }
+  async function installCrew(id) {
+    const crew = CREWS.find((c) => c.id === id);
+    if (!crew || installingCrew) return;
+    const have = new Set(agentsCache.map((a) => a.name));
+    const missing = crew.agents.filter((a) => !have.has(a.name));
+    if (!missing.length && !confirm(`Agents ${crew.agents.map((a) => a.name).join(', ')} are already saved. Create another team named "${crew.team}"?`)) return;
+    installingCrew = true;
+    renderCrews();
+    let toastText = '';
+    try {
+      for (const a of missing) {
+        const r = await api('/gateway/agents', {
+          method: 'POST',
+          body: {
+            name: a.name, model: 'auto', description: a.description, personality: a.personality,
+            skills: [], mcp: [], tool_policy: a.subs ? { max_subagents: a.subs } : {},
+          },
+        });
+        if (!r.ok) { toast(errMsg(r), true); return; }
+      }
+      const members = crew.agents.map((a) => a.name);
+      const r = await api('/gateway/teams', { method: 'POST', body: { name: crew.team, lead: members[0], members } });
+      if (!r.ok) { toast(errMsg(r), true); return; }
+      const kept = crew.agents.filter((a) => have.has(a.name)).map((a) => a.name);
+      toastText = `Team ${r.data.team.name} · ${r.data.team.id}${kept.length ? `. Kept ${kept.join(', ')}` : ''}`;
+    } finally {
+      installingCrew = false;
+      await loadAgents();
+      if (toastText) toast(toastText);
+    }
+  }
   let agentsCache = [];
+  renderCrews();
+
   async function loadAgents() {
-    const r = await api('/gateway/admin/agents');
+    const r = await api('/gateway/agents');
     agentsCache = r.data?.agents || [];
+    renderCrews();
     renderTeamPicks();
     loadTeams();
     $('#agents-body').innerHTML = agentsCache.map((a) => `
@@ -1552,11 +1668,11 @@
       temperature: num('#ag-temp'), max_tokens: num('#ag-max'), description: $('#ag-desc').value.trim(), personality: $('#ag-persona').value.trim(),
       mcp: csv($('#ag-mcp').value), tool_policy: readPolicy('ag'),
     };
-    const r = await act(api('/gateway/admin/agents', { method: 'POST', body }), 'Agent saved', loadAgents);
+    const r = await act(api('/gateway/agents', { method: 'POST', body }), 'Agent saved', loadAgents);
     return r.ok;
   }
   async function tryAgent() { if (await saveAgent()) tryModel('agent/' + $('#ag-name').value.trim()); }
-  const deleteAgent = (n) => confirm(`Delete agent ${n}?`) && act(api(`/gateway/admin/agents/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Agent deleted', loadAgents);
+  const deleteAgent = (n) => confirm(`Delete agent ${n}?`) && act(api(`/gateway/agents/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Agent deleted', loadAgents);
   let teamsCache = [];
   function renderTeamPicks(selected, lead) {
     const set = new Set(selected || [...$('#team-members').querySelectorAll('input:checked')].map((i) => i.value));
@@ -1569,7 +1685,7 @@
     if (keepLead) sel.value = keepLead;
   }
   async function loadTeams() {
-    const r = await api('/gateway/admin/teams');
+    const r = await api('/gateway/teams');
     teamsCache = r.data?.teams || [];
     $('#teams-body').innerHTML = teamsCache.map((t) => `
       <tr>
@@ -1602,12 +1718,12 @@
     if (lead && !members.includes(lead)) members.unshift(lead);
     const body = { name, lead, members };
     if (id) body.id = id;
-    const r = await act(api('/gateway/admin/teams', { method: 'POST', body }), 'Team saved', loadTeams);
+    const r = await act(api('/gateway/teams', { method: 'POST', body }), 'Team saved', loadTeams);
     if (r.ok && r.data?.team?.id) $('#team-id').value = r.data.team.id;
   }
-  const deleteTeam = (id, name) => confirm(`Delete team ${name}? Sessions that used it keep their chat, but the roster is gone.`) && act(api(`/gateway/admin/teams/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Team deleted', loadTeams);
+  const deleteTeam = (id, name) => confirm(`Delete team ${name}? Sessions that used it keep their chat, but the roster is gone.`) && act(api(`/gateway/teams/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Team deleted', loadTeams);
   async function loadSessions() {
-    const r = await api('/gateway/admin/sessions');
+    const r = await api('/gateway/sessions');
     $('#sessions-body').innerHTML = (r.data?.sessions || []).map((s) => `
       <tr>
         <td class="mono">${esc(s.session)}</td>
@@ -1622,7 +1738,7 @@
       </tr>`).join('') || emptyRow(6, 'No sessions yet. Send x-eay-session-id with a request to start one.');
   }
   async function openSession(id) {
-    const r = await api(`/gateway/admin/sessions/${encodeURIComponent(id)}`);
+    const r = await api(`/gateway/sessions/${encodeURIComponent(id)}`);
     if (!r.ok) return toast(errMsg(r), true);
     const d = r.data;
     const msgs = (d.messages || []).map((m) => `<div class="bubble ${m.role === 'user' ? 'user' : 'assistant'}" style="max-width:100%"><span class="meta">${esc(m.role)}</span>${esc(typeof m.content === 'string' ? m.content : JSON.stringify(m.content))}</div>`).join('');
@@ -1636,11 +1752,11 @@
   }
   const deleteSession = (id) =>
     confirm('Forget this session? The conversation history is deleted.') &&
-    act(api(`/gateway/admin/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Session forgotten', () => { $('#session-detail').innerHTML = ''; loadSessions(); });
+    act(api(`/gateway/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Session forgotten', () => { $('#session-detail').innerHTML = ''; loadSessions(); });
 
   // ---- Keys -------------------------------------------------------------------
   async function loadKeys() {
-    const r = await api('/gateway/admin/keys');
+    const r = await api('/gateway/keys');
     $('#keys-body').innerHTML = (r.data?.keys || []).map((k) => {
       const used = (k.total_input_tokens || 0) + (k.total_output_tokens || 0);
       const limits = [
@@ -1674,14 +1790,14 @@
       allowed_providers: providers.length ? providers : null, default_skills: skills.length ? skills : null,
       tool_policy: readPolicy('key'),
     };
-    const r = await act(api('/gateway/admin/keys', { method: 'POST', body }), 'Key created', loadKeys);
+    const r = await act(api('/gateway/keys', { method: 'POST', body }), 'Key created', loadKeys);
     if (r.ok && r.data.key?.key) {
       const box = $('#new-key-secret'); box.hidden = false;
       box.innerHTML = `Copy this key now. It is not shown again.<div class="row" style="margin-top:6px"><span class="grow">${esc(r.data.key.key)}</span><button class="ghost" onclick="navigator.clipboard.writeText(${attr(r.data.key.key)}).then(() => toast('Copied'))">Copy</button></div>`;
     }
   }
-  const toggleKey = (id) => act(api(`/gateway/admin/keys/${encodeURIComponent(id)}/toggle`, { method: 'PATCH' }), null, loadKeys);
-  const deleteKey = (id) => confirm('Delete this key? Apps using it stop working.') && act(api(`/gateway/admin/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Key deleted', loadKeys);
+  const toggleKey = (id) => act(api(`/gateway/keys/${encodeURIComponent(id)}/toggle`, { method: 'PATCH' }), null, loadKeys);
+  const deleteKey = (id) => confirm('Delete this key? Apps using it stop working.') && act(api(`/gateway/keys/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Key deleted', loadKeys);
 
   // ---- Clients ----------------------------------------------------------------
   function renderClients() {
@@ -1708,7 +1824,7 @@
     $('#model-list').innerHTML = (r.data?.data || []).map((m) => `<option value="${esc(m.id)}"></option>`).join('');
   }
   async function loadMcpServersForPlayground() {
-    const r = await api('/gateway/admin/mcp');
+    const r = await api('/gateway/mcp');
     $('#pg-mcp-servers').innerHTML = (r.data?.mcp_servers || []).filter((m) => m.enabled).map((m) => `<option value="${esc(m.name)}">${esc(m.name)}</option>`).join('');
   }
   function tryModel(id) { $('#pg-model').value = id; showTab('playground'); $('#pg-prompt').focus(); }
