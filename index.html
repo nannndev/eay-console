@@ -169,6 +169,23 @@
     .trace .t { float: right; color: var(--dim); }
     .trace .d { display: block; color: var(--muted); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
     @keyframes pulse { 50% { box-shadow: 0 0 0 7px rgba(255,255,255,0.04), 0 0 16px rgba(255,255,255,0.6); } }
+    /* Run tree */
+    .tree { display: flex; flex-direction: column; gap: 10px; }
+    .tree-group { border: 1px solid var(--border); border-radius: 8px; padding: 8px 10px; }
+    .tree-group > .tree-head { font: 11px var(--mono); color: var(--dim); margin-bottom: 4px; }
+    .tree ul { list-style: none; margin: 0; padding: 0 0 0 18px; position: relative; }
+    .tree > .tree-group > ul { padding-left: 0; }
+    .tree li { position: relative; padding: 3px 0 3px 0; }
+    .tree ul ul > li::before { content: ""; position: absolute; left: -12px; top: 0; bottom: 0; border-left: 1px solid var(--border-hi); }
+    .tree ul ul > li:last-child::before { bottom: auto; height: 15px; }
+    .tree ul ul > li::after { content: ""; position: absolute; left: -12px; top: 15px; width: 9px; border-top: 1px solid var(--border-hi); }
+    .run { display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 8px; align-items: center; padding: 4px 6px; border-radius: 6px; }
+    .run:hover { background: var(--surface-2); }
+    .run .who { min-width: 0; }
+    .run .who b { font-weight: 600; }
+    .run .meta { font: 11px var(--mono); color: var(--dim); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; display: block; }
+    .run .out { grid-column: 2 / 4; }
+    .run .out pre { margin: 4px 0 0; max-height: 220px; overflow: auto; }
     .metrics { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
     .metric { border: 1px solid var(--border); border-radius: 6px; padding: 7px 9px; }
     .metric b { display: block; font: 600 16px var(--sans); font-variant-numeric: tabular-nums; letter-spacing: -0.02em; }
@@ -328,11 +345,9 @@
         <div id="approvals-list"></div>
       </div>
       <div class="card">
-        <h2>Subagents <button class="ghost" onclick="loadSubagents()">Refresh</button></h2>
-        <div class="table-wrap"><table>
-          <thead><tr><th>Role</th><th>Phase</th><th>Status</th><th>Target</th><th>Output</th><th></th></tr></thead>
-          <tbody id="subagents-body"></tbody>
-        </table></div>
+        <h2>Agent runs <button class="ghost" onclick="loadSubagents()">Refresh</button></h2>
+        <p class="hint" style="margin:0 0 10px">Who handed work to whom. Subagents started by a model in the same request are grouped under it and run side by side.</p>
+        <div id="run-tree" class="tree"></div>
       </div>
       <div class="card">
         <h2>Live events
@@ -1024,19 +1039,48 @@
     const picked = new Set([...sel.selectedOptions].map((o) => o.value));
     sel.innerHTML = (m.data?.mcp_servers || []).filter((x) => x.enabled)
       .map((x) => `<option value="${esc(x.name)}" ${picked.has(x.name) ? 'selected' : ''}>${esc(x.name)}</option>`).join('');
-    $('#subagents-body').innerHTML = (r.data?.subagents || []).map((s) => `
-      <tr>
-        <td>${esc(s.role)}${s.parent_id ? `<div class="mono dim">↳ ${esc(s.parent_id)}</div>` : ''}<div class="mono dim">${esc(s.id)}</div></td>
-        <td>${phasePill(s.phase)}</td>
-        <td class="mono">${esc(s.status_message)}</td>
-        <td class="mono">${esc(s.target || s.model)}</td>
-        <td class="mono"><details class="sub"><summary>${esc((s.output || s.error || '–').slice(0, 60))}</summary><pre>${esc(s.output || s.error || '')}</pre></details></td>
-        <td class="actions">
-          ${FINISHED.includes(s.phase) ? '' : `<button class="ghost" onclick="cancelSubagent(${attr(s.id)})">Cancel</button>`}
-          <button class="ghost" onclick="$('#sub-parent').value=${attr(s.id)};$('#sub-role').focus()">Spawn child</button>
-          <button class="ghost danger" onclick="deleteSubagent(${attr(s.id)})">Delete</button>
-        </td>
-      </tr>`).join('') || emptyRow(6, 'No subagents yet. Spawn one above.');
+    renderRunTree(r.ok ? (await api('/gateway/admin/subagents/tree')).data?.tree || [] : []);
+  }
+  const elapsed = (s) => {
+    const end = FINISHED.includes(s.phase) ? s.updated_at : Date.now() / 1000;
+    const secs = Math.max(0, end - s.created_at);
+    return secs < 60 ? `${secs.toFixed(secs < 10 ? 1 : 0)}s` : `${Math.floor(secs / 60)}m ${Math.round(secs % 60)}s`;
+  };
+  function runNode(s) {
+    const agent = (s.model || '').startsWith('agent/') ? s.model : '';
+    const result = s.output || s.error || '';
+    const live = !FINISHED.includes(s.phase);
+    return `<li>
+      <div class="run">
+        ${phasePill(s.phase)}
+        <span class="who"><b>${esc(s.role)}</b> <span class="mono dim">${esc(agent || s.target || s.model)}</span>
+          <span class="meta">${esc(live ? s.status_message : '')}${live ? ' · ' : ''}${elapsed(s)} · ${esc(s.id)}</span></span>
+        <span class="actions">
+          ${live ? `<button class="ghost" onclick="cancelSubagent(${attr(s.id)})">Cancel</button>` : ''}
+          <button class="ghost" onclick="$('#sub-parent').value=${attr(s.id)};$('#sub-role').focus()" title="Spawn a subagent under this one">+ Child</button>
+          <button class="ghost danger" onclick="deleteSubagent(${attr(s.id)})" aria-label="Delete">✕</button>
+        </span>
+        ${result ? `<div class="out"><details class="sub"><summary>${esc(result.slice(0, 90))}${result.length > 90 ? '…' : ''}</summary><pre>${esc(result)}</pre></details></div>` : ''}
+      </div>
+      ${s.children?.length ? `<ul>${s.children.map(runNode).join('')}</ul>` : ''}
+    </li>`;
+  }
+  function renderRunTree(roots) {
+    if (!roots.length) { $('#run-tree').innerHTML = '<div class="empty">No agent runs yet. Spawn one above, or give an agent a subagent budget and let the model delegate.</div>'; return; }
+    // Group roots by the request that started them, so a lead's parallel workers sit together.
+    const groups = new Map();
+    for (const r of roots) {
+      const k = r.parent_id || r.id;
+      if (!groups.has(k)) groups.set(k, []);
+      groups.get(k).push(r);
+    }
+    $('#run-tree').innerHTML = [...groups.entries()].map(([k, list]) => {
+      const fromRequest = k.startsWith('req_') || k.startsWith('pg_');
+      const head = fromRequest
+        ? `started by request ${esc(k)} · ${list.length} subagent${list.length > 1 ? 's' : ''}`
+        : list[0].parent_id ? `parent ${esc(k)}` : 'started by hand';
+      return `<div class="tree-group"><div class="tree-head">${head}</div><ul>${list.slice().reverse().map(runNode).join('')}</ul></div>`;
+    }).join('');
   }
   async function spawnSubagent() {
     const body = { role: $('#sub-role').value.trim(), model: $('#sub-model').value.trim() || 'auto', skills: csv($('#sub-skills').value), prompt: $('#sub-prompt').value.trim() };
