@@ -460,6 +460,7 @@
                 <div class="grid" style="gap:10px;margin-top:10px">
                   <label class="field">Skills <input id="pg-skills" placeholder="rust-expert, …" /></label>
                   <label class="field">Session id (memory) <input id="pg-session" placeholder="none" /></label>
+                  <label class="field">Team <input id="pg-team" placeholder="tm_… or a unique name" /></label>
                   <label class="field">Virtual key <input id="pg-key" type="password" placeholder="gw-sk-… (optional)" /></label>
                   <div class="toggles">
                     <label><input type="checkbox" id="pg-stream" checked /> Stream</label>
@@ -689,8 +690,11 @@
             <label class="field">Subagents the model may start
               <input id="ag-tsubs" type="number" min="0" max="20" placeholder="0 = off" style="width:140px" />
             </label>
+            <label class="field grow">MCP servers this agent uses
+              <input id="ag-mcp" placeholder="filesystem, github" />
+            </label>
           </div>
-          <span class="hint">Applies to tools the gateway runs (x-eay-mcp, subagents). Coding apps keep their own permission modes.</span>
+          <span class="hint">Tool limits apply to tools the gateway runs. MCP servers on an agent are used only for requests from this machine, same as x-eay-mcp. Workers in one run share a team thread; other runs cannot read it.</span>
         </details>
         <div class="row" style="margin-top:10px">
           <button class="btn" onclick="saveAgent()">Save agent</button>
@@ -705,9 +709,29 @@
         </table></div>
       </div>
       <div class="card">
+        <h2>Teams</h2>
+        <p class="hint" style="margin:0 0 10px">A roster you assemble before the chat. Each member keeps its own subagents. The id stays when you rename it. A session stores that id and its own messages: close it and the roster stays; a second session on the same id keeps a separate chat.</p>
+        <div class="row" style="margin-bottom:10px">
+          <input id="team-id" type="hidden" />
+          <input id="team-name" placeholder="Name, e.g. app" />
+          <label class="field">Lead
+            <select id="team-lead"></select>
+          </label>
+        </div>
+        <div id="team-members" class="row" style="margin-bottom:10px"></div>
+        <div class="row">
+          <button class="btn" onclick="saveTeam()">Save team</button>
+          <button class="ghost" onclick="newTeam()">New team</button>
+        </div>
+        <div class="table-wrap" style="margin-top:12px"><table>
+          <thead><tr><th>Name</th><th>Id</th><th>Lead</th><th>Members</th><th></th></tr></thead>
+          <tbody id="teams-body"></tbody>
+        </table></div>
+      </div>
+      <div class="card">
         <h2>Sessions <button class="ghost" onclick="loadSessions()">Refresh</button></h2>
         <div class="table-wrap"><table>
-          <thead><tr><th>Session</th><th>Owner</th><th>Messages</th><th>Updated</th><th></th></tr></thead>
+          <thead><tr><th>Session</th><th>Owner</th><th>Team</th><th>Messages</th><th>Updated</th><th></th></tr></thead>
           <tbody id="sessions-body"></tbody>
         </table></div>
         <div id="session-detail"></div>
@@ -1075,11 +1099,16 @@
       groups.get(k).push(r);
     }
     $('#run-tree').innerHTML = [...groups.entries()].map(([k, list]) => {
+      // The root node is the request itself, so it does not need a second heading.
+      const rootIsRequest = list.length === 1 && list[0].id === k;
       const fromRequest = k.startsWith('req_') || k.startsWith('pg_');
-      const head = fromRequest
-        ? `started by request ${esc(k)} · ${list.length} subagent${list.length > 1 ? 's' : ''}`
-        : list[0].parent_id ? `parent ${esc(k)}` : 'started by hand';
-      return `<div class="tree-group"><div class="tree-head">${head}</div><ul>${list.slice().reverse().map(runNode).join('')}</ul></div>`;
+      const head = rootIsRequest
+        ? ''
+        : fromRequest
+          ? `started by request ${esc(k)} · ${list.length} subagent${list.length > 1 ? 's' : ''}`
+          : list[0].parent_id ? `parent ${esc(k)}` : 'started by hand';
+      const headHtml = head ? `<div class="tree-head">${head}</div>` : '';
+      return `<div class="tree-group">${headHtml}<ul>${list.slice().reverse().map(runNode).join('')}</ul></div>`;
     }).join('');
   }
   async function spawnSubagent() {
@@ -1494,6 +1523,8 @@
   async function loadAgents() {
     const r = await api('/gateway/admin/agents');
     agentsCache = r.data?.agents || [];
+    renderTeamPicks();
+    loadTeams();
     $('#agents-body').innerHTML = agentsCache.map((a) => `
       <tr>
         <td class="mono">agent/${esc(a.name)}</td>
@@ -1511,6 +1542,7 @@
     const a = agentsCache.find((x) => x.name === n); if (!a) return;
     $('#ag-name').value = a.name; $('#ag-model').value = a.model; $('#ag-skills').value = (a.skills || []).join(', ');
     $('#ag-temp').value = a.temperature ?? ''; $('#ag-max').value = a.max_tokens ?? ''; $('#ag-desc').value = a.description || ''; $('#ag-persona').value = a.personality || '';
+    $('#ag-mcp').value = (a.mcp || []).join(', ');
     fillPolicy('ag', a.tool_policy);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
@@ -1518,26 +1550,76 @@
     const body = {
       name: $('#ag-name').value.trim(), model: $('#ag-model').value.trim() || 'auto', skills: csv($('#ag-skills').value),
       temperature: num('#ag-temp'), max_tokens: num('#ag-max'), description: $('#ag-desc').value.trim(), personality: $('#ag-persona').value.trim(),
-      tool_policy: readPolicy('ag'),
+      mcp: csv($('#ag-mcp').value), tool_policy: readPolicy('ag'),
     };
     const r = await act(api('/gateway/admin/agents', { method: 'POST', body }), 'Agent saved', loadAgents);
     return r.ok;
   }
   async function tryAgent() { if (await saveAgent()) tryModel('agent/' + $('#ag-name').value.trim()); }
   const deleteAgent = (n) => confirm(`Delete agent ${n}?`) && act(api(`/gateway/admin/agents/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Agent deleted', loadAgents);
+  let teamsCache = [];
+  function renderTeamPicks(selected, lead) {
+    const set = new Set(selected || [...$('#team-members').querySelectorAll('input:checked')].map((i) => i.value));
+    const keepLead = lead || $('#team-lead').value;
+    $('#team-members').innerHTML = agentsCache.map((a) =>
+      `<label><input type="checkbox" value="${esc(a.name)}" ${set.has(a.name) ? 'checked' : ''}/> ${esc(a.name)}</label>`
+    ).join('') || '<span class="dim">Save an agent first.</span>';
+    const sel = $('#team-lead');
+    sel.innerHTML = agentsCache.map((a) => `<option value="${esc(a.name)}">${esc(a.name)}</option>`).join('');
+    if (keepLead) sel.value = keepLead;
+  }
+  async function loadTeams() {
+    const r = await api('/gateway/admin/teams');
+    teamsCache = r.data?.teams || [];
+    $('#teams-body').innerHTML = teamsCache.map((t) => `
+      <tr>
+        <td class="mono">${esc(t.name)}</td>
+        <td class="mono dim">${esc(t.id)}</td>
+        <td class="mono">${esc(t.lead)}</td>
+        <td>${esc((t.members || []).join(', '))}</td>
+        <td class="actions">
+          <button class="ghost" onclick="editTeam(${attr(t.id)})">Edit</button>
+          <button class="ghost danger" onclick="deleteTeam(${attr(t.id)}, ${attr(t.name)})">Delete</button>
+        </td>
+      </tr>`).join('') || emptyRow(5, 'No teams yet. Pick agents above.');
+  }
+  function newTeam() {
+    $('#team-id').value = '';
+    $('#team-name').value = '';
+    renderTeamPicks([], '');
+  }
+  function editTeam(id) {
+    const t = teamsCache.find((x) => x.id === id); if (!t) return;
+    $('#team-id').value = t.id;
+    $('#team-name').value = t.name;
+    renderTeamPicks(t.members, t.lead);
+  }
+  async function saveTeam() {
+    const name = $('#team-name').value.trim();
+    const lead = $('#team-lead').value;
+    const id = $('#team-id').value.trim();
+    const members = [...$('#team-members').querySelectorAll('input:checked')].map((i) => i.value);
+    if (lead && !members.includes(lead)) members.unshift(lead);
+    const body = { name, lead, members };
+    if (id) body.id = id;
+    const r = await act(api('/gateway/admin/teams', { method: 'POST', body }), 'Team saved', loadTeams);
+    if (r.ok && r.data?.team?.id) $('#team-id').value = r.data.team.id;
+  }
+  const deleteTeam = (id, name) => confirm(`Delete team ${name}? Sessions that used it keep their chat, but the roster is gone.`) && act(api(`/gateway/admin/teams/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Team deleted', loadTeams);
   async function loadSessions() {
     const r = await api('/gateway/admin/sessions');
     $('#sessions-body').innerHTML = (r.data?.sessions || []).map((s) => `
       <tr>
         <td class="mono">${esc(s.session)}</td>
         <td class="mono dim">${esc(s.owner)}</td>
+        <td class="mono">${esc(s.team || '')}</td>
         <td class="mono">${fmtN(s.messages)}</td>
         <td class="mono dim">${ago(s.updated_at)}</td>
         <td class="actions">
           <button class="ghost" onclick="openSession(${attr(s.id)})">Open</button>
           <button class="ghost danger" onclick="deleteSession(${attr(s.id)})">Forget</button>
         </td>
-      </tr>`).join('') || emptyRow(5, 'No sessions yet. Send x-eay-session-id with a request to start one.');
+      </tr>`).join('') || emptyRow(6, 'No sessions yet. Send x-eay-session-id with a request to start one.');
   }
   async function openSession(id) {
     const r = await api(`/gateway/admin/sessions/${encodeURIComponent(id)}`);
@@ -1547,7 +1629,7 @@
     const subs = (d.subagents || []).map((s) => `<div class="mono">${phasePill(s.phase)} ${esc(s.role)} <span class="dim">${esc(s.id)}</span></div>`).join('');
     $('#session-detail').innerHTML = `
       <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px">
-        <div class="row" style="justify-content:space-between"><strong class="mono">${esc(d.session)}</strong><button class="ghost" onclick="$('#session-detail').innerHTML=''">Close</button></div>
+        <div class="row" style="justify-content:space-between"><strong class="mono">${esc(d.session)}</strong><span class="dim">${d.team ? 'team ' + esc(d.team) : ''}</span><button class="ghost" onclick="$('#session-detail').innerHTML=''">Close</button></div>
         ${subs ? `<div style="margin:8px 0"><span class="stat-label">Subagents</span>${subs}</div>` : ''}
         <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;max-height:420px;overflow:auto">${msgs || '<span class="dim">No messages.</span>'}</div>
       </div>`;
@@ -1610,7 +1692,7 @@
       ['Cursor / any OpenAI client', `Base URL:  ${base}/v1\nAPI key:   gw-sk-…  (or any value locally)\nModel:     auto`],
       ['curl', `curl ${base}/v1/chat/completions \\\n  -H 'content-type: application/json' \\\n  -d '{"model":"auto","messages":[{"role":"user","content":"Hello"}]}'`],
       ['Python (openai)', `from openai import OpenAI\nclient = OpenAI(base_url="${base}/v1", api_key="gw-sk-…")\nprint(client.chat.completions.create(\n    model="auto",\n    messages=[{"role": "user", "content": "Hello"}],\n).choices[0].message.content)`],
-      ['Gateway headers', `x-eay-skills: rust-expert,reviewer\nx-eay-session-id: my-thread        # server-side memory\nx-eay-mcp: *                       # give the model MCP tools\nx-eay-redact: true                 # strip secrets before sending\nx-eay-max-context-chars: 200000`],
+      ['Gateway headers', `x-eay-skills: rust-expert,reviewer\nx-eay-session-id: my-thread        # server-side memory\nx-eay-team: tm_ab12cd34ef56        # roster id; same id, other session = other chat\nx-eay-mcp: *                       # give the model MCP tools\nx-eay-redact: true                 # strip secrets before sending\nx-eay-max-context-chars: 200000`],
     ];
     $('#client-snippets').innerHTML = snippets.map(([t, code], i) => `
       <div class="card" style="margin:0"><h2>${esc(t)} <button class="ghost" onclick="copySnippet(${i})">Copy</button></h2><pre id="snip-${i}">${esc(code)}</pre></div>`).join('');
@@ -1771,6 +1853,7 @@
     const h = {};
     const skills = $('#pg-skills').value.trim(); if (skills) h['x-eay-skills'] = skills;
     const sess = $('#pg-session').value.trim(); if (sess) h['x-eay-session-id'] = sess;
+    const team = $('#pg-team').value.trim(); if (team) h['x-eay-team'] = team;
     if ($('#pg-redact').checked) h['x-eay-redact'] = 'true';
     if ($('#pg-mcp').checked) {
       const chosen = [...$('#pg-mcp-servers').selectedOptions].map((o) => o.value);
