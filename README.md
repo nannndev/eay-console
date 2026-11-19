@@ -1,24 +1,36 @@
 # eay-console
 
-The web console for [eay-gateway](https://github.com/nannndev/eay-gateway): one self-contained
-`index.html` (no build step, no dependencies).
+The web console for [eay-gateway](https://github.com/nannndev/eay-gateway). A single
+`index.html` with no build step and no dependencies. It talks to the gateway's API like any other
+client: overview, live activity and subagents, a streaming playground, providers and OAuth logins,
+MCP tools, routing, skills, agents and keys.
 
-The gateway embeds this file at build time and serves it at `http://127.0.0.1:20129/` and `/ui`,
-so the console talks to the gateway on the same origin.
+## Use it
 
-## Editing
+**Hosted:** open <https://nannndev.github.io/eay-console/> and start the gateway with that origin
+allowed:
 
-1. Edit `index.html` here and push.
-2. In eay-gateway, move the submodule to the new commit and rebuild:
+```sh
+eay-gateway --console-origin https://nannndev.github.io
+```
 
-   ```sh
-   git submodule update --remote crates/eay-gateway/console
-   git add crates/eay-gateway/console && git commit -m "chore: update console"
-   cargo run --bin eay-gateway
-   ```
+**Locally:** any static server on `localhost` works with no gateway flags, because the gateway
+always allows `http://localhost:<port>`:
 
-To try changes without a commit, edit `crates/eay-gateway/console/index.html` inside your
-eay-gateway checkout and rebuild; push from that folder when done.
+```sh
+python3 -m http.server 8080   # then open http://localhost:8080
+```
+
+The console connects to `http://127.0.0.1:20129` by default. Change it in the sidebar, or open the
+page with `?gateway=http://host:port`. If the gateway runs with `--admin-token`, the console asks
+for it.
+
+## Security notes
+
+- The gateway refuses browser requests from origins it does not trust, so other websites cannot
+  use it. Only add origins you control to `--console-origin`.
+- The gateway URL and admin token are kept in this browser's local storage.
+- If your gateway is reachable from other machines, always set `--admin-token`.
 
 ## License
 

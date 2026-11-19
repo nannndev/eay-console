@@ -50,6 +50,8 @@
     .tab-btn:hover { color: var(--text); background: var(--surface-2); }
     .tab-btn.active { color: var(--accent-fg); background: var(--accent); }
     .tab-btn .count { font: 11px var(--mono); opacity: 0.6; }
+    .gw-url { padding: 0 6px; }
+    .gw-url input { font: 12px var(--mono); padding: 5px 8px; }
     .aside-foot { margin-top: auto; display: flex; flex-direction: column; gap: 6px; padding: 0 6px; }
     main { padding: 28px 32px 80px; max-width: 1240px; width: 100%; }
     .page-head { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; flex-wrap: wrap; margin-bottom: 18px; }
@@ -223,6 +225,14 @@
       <span>eay-gateway</span>
     </div>
     <div class="health"><span class="dot" id="health-dot"></span><span id="health-text">checking…</span></div>
+    <div class="gw-url">
+      <label class="field">Gateway
+        <span class="row" style="gap:4px">
+          <input id="gw-url" class="grow" spellcheck="false" aria-label="Gateway URL" onkeydown="if(event.key==='Enter')saveGateway()" />
+          <button class="ghost" onclick="saveGateway()">Connect</button>
+        </span>
+      </label>
+    </div>
     <nav aria-label="Sections">
       <div class="nav-group">Monitor</div>
       <button class="tab-btn active" data-tab="overview">Overview</button>
@@ -243,7 +253,6 @@
         <input id="admin-token" type="password" placeholder="Admin token" class="grow" aria-label="Admin token" />
         <button class="ghost" onclick="saveToken()">Use</button>
       </div>
-      <span class="hint" id="base-url"></span>
     </div>
   </aside>
 
@@ -715,6 +724,20 @@
   }
 
   // ---- HTTP ---------------------------------------------------------------
+  // The console is its own app: every call goes to the gateway URL set in the sidebar.
+  // `?gateway=` in the page URL wins, so a link can point the console at a specific gateway.
+  const DEFAULT_GATEWAY = 'http://127.0.0.1:20129';
+  const cleanUrl = (u) => (u || '').trim().replace(/\/+$/, '');
+  let gatewayBase = cleanUrl(new URLSearchParams(location.search).get('gateway')) || cleanUrl(store.get('eay-gateway-url')) || DEFAULT_GATEWAY;
+  const gw = (path) => gatewayBase + path;
+  function saveGateway() {
+    const v = cleanUrl($('#gw-url').value);
+    if (!/^https?:\/\/[^/]+$/.test(v)) return toast('Enter a gateway URL like http://127.0.0.1:20129', true);
+    gatewayBase = v;
+    store.set('eay-gateway-url', v);
+    modelsLoaded = 0;
+    restartActivity(); checkHealth(); showTab(currentTab);
+  }
   let adminToken = store.get('eay-admin-token');
   const adminHeaders = () => adminToken ? { 'x-admin-token': adminToken } : {};
   function saveToken() {
@@ -727,13 +750,13 @@
     const isAdmin = url.startsWith('/gateway/admin');
     let r;
     try {
-      r = await fetch(url, {
+      r = await fetch(gw(url), {
         method,
         headers: { 'content-type': 'application/json', ...(isAdmin ? adminHeaders() : {}), ...headers },
         body: body === undefined ? undefined : typeof body === 'string' ? body : JSON.stringify(body),
       });
     } catch (e) {
-      return { ok: false, status: 0, data: { detail: `Gateway unreachable: ${e.message}` } };
+      return { ok: false, status: 0, data: { detail: `Can't reach the gateway at ${gatewayBase}. Is it running? A hosted console also needs the gateway started with --console-origin ${location.origin}.` } };
     }
     if (r.status === 401 && isAdmin) $('#token-bar').classList.add('show');
     const text = await r.text();
@@ -884,7 +907,7 @@
     activityAbort = new AbortController();
     const state = $('#stream-state');
     try {
-      const resp = await fetch('/gateway/admin/events', { headers: adminHeaders(), signal: activityAbort.signal });
+      const resp = await fetch(gw('/gateway/admin/events'), { headers: adminHeaders(), signal: activityAbort.signal });
       if (resp.status === 401) { $('#token-bar').classList.add('show'); state.textContent = 'needs admin token'; return; }
       if (!resp.ok) throw new Error('HTTP ' + resp.status);
       state.textContent = 'live'; state.className = 'pill on';
@@ -1393,7 +1416,7 @@
 
   // ---- Clients ----------------------------------------------------------------
   function renderClients() {
-    const base = location.origin;
+    const base = gatewayBase;
     const snippets = [
       ['Claude Code', `export ANTHROPIC_BASE_URL="${base}"\nexport ANTHROPIC_API_KEY="gw-sk-…"   # any value works locally\nclaude`],
       ['Codex CLI', `# ~/.codex/config.toml\nmodel = "auto"\nmodel_provider = "eay"\n\n[model_providers.eay]\nname = "eay-gateway"\nbase_url = "${base}/v1"\nwire_api = "responses"`],
@@ -1626,7 +1649,7 @@
     $('#pg-send').textContent = 'Stop';
     const t0 = performance.now(); let ttft = null; let usage = {};
     try {
-      const resp = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...gatewayHeaders(runId) }, body: JSON.stringify(body), signal: pgAbort.signal });
+      const resp = await fetch(gw(url), { method: 'POST', headers: { 'content-type': 'application/json', ...gatewayHeaders(runId) }, body: JSON.stringify(body), signal: pgAbort.signal });
       if (!resp.ok) {
         const t = await resp.text(); let j; try { j = JSON.parse(t); } catch { j = t; }
         throw new Error(errMsg({ data: j, status: resp.status }));
@@ -1672,7 +1695,7 @@
     const { url, body } = buildChatRequest();
     thread.pop();
     const h = gatewayHeaders(null);
-    const lines = [`curl ${location.origin}${url}`, `  -H 'content-type: application/json'`, ...Object.entries(h).map(([k, v]) => `  -H '${k}: ${v.replace(/'/g, "'\\''")}'`), `  -d '${JSON.stringify(body).replace(/'/g, "'\\''")}'`];
+    const lines = [`curl ${gatewayBase}${url}`, `  -H 'content-type: application/json'`, ...Object.entries(h).map(([k, v]) => `  -H '${k}: ${v.replace(/'/g, "'\\''")}'`), `  -d '${JSON.stringify(body).replace(/'/g, "'\\''")}'`];
     navigator.clipboard.writeText(lines.join(' \\\n')).then(() => toast('curl command copied'), () => toast('Clipboard is blocked here', true));
   }
 
@@ -1684,7 +1707,7 @@
     setMetrics({ ttft: null, total: performance.now() - t0 });
   }
   async function postJson(url, body, runId) {
-    const resp = await fetch(url, { method: 'POST', headers: { 'content-type': 'application/json', ...gatewayHeaders(runId) }, body: JSON.stringify(body) });
+    const resp = await fetch(gw(url), { method: 'POST', headers: { 'content-type': 'application/json', ...gatewayHeaders(runId) }, body: JSON.stringify(body) });
     return resp;
   }
   async function failFrom(resp) { const t = await resp.text(); let j; try { j = JSON.parse(t); } catch { j = t; } return new Error(errMsg({ data: j, status: resp.status })); }
@@ -1722,14 +1745,14 @@
     const h = gatewayHeaders(runId); delete h['content-type'];
     const endpoint = $('#tr-translate').checked ? '/v1/audio/translations' : '/v1/audio/transcriptions';
     $('#tr-out').innerHTML = '<div class="msg">Transcribing…</div>';
-    const resp = await fetch(endpoint, { method: 'POST', headers: h, body: fd });
+    const resp = await fetch(gw(endpoint), { method: 'POST', headers: h, body: fd });
     if (!resp.ok) { $('#tr-out').innerHTML = ''; throw await failFrom(resp); }
     const t = await resp.text(); let j; try { j = JSON.parse(t); } catch { j = { text: t }; }
     $('#tr-out').innerHTML = `<pre>${esc(j.text ?? t)}</pre>`;
   });
 
   // ---- Boot -------------------------------------------------------------------
-  $('#base-url').textContent = location.host;
+  $('#gw-url').value = gatewayBase;
   if (adminToken) $('#admin-token').value = adminToken;
   renderThread(); renderTrace();
   checkHealth(); setInterval(checkHealth, 30000);
