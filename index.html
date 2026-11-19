@@ -236,7 +236,7 @@
     <nav aria-label="Sections">
       <div class="nav-group">Monitor</div>
       <button class="tab-btn active" data-tab="overview">Overview</button>
-      <button class="tab-btn" data-tab="activity">Activity <span class="count" id="nav-live"></span></button>
+      <button class="tab-btn" data-tab="activity">Activity <span class="count" id="nav-live"></span><span class="count" id="nav-approvals" style="color:var(--bad)"></span></button>
       <button class="tab-btn" data-tab="playground">Playground</button>
       <div class="nav-group">Connect</div>
       <button class="tab-btn" data-tab="providers">Providers</button>
@@ -322,6 +322,10 @@
           <button class="btn" onclick="spawnSubagent()">Spawn subagent</button>
           <span class="hint">Up to 8 run at once; the rest wait as queued.</span>
         </div>
+      </div>
+      <div class="card" id="approvals-card" hidden>
+        <h2>Waiting for your approval</h2>
+        <div id="approvals-list"></div>
       </div>
       <div class="card">
         <h2>Subagents <button class="ghost" onclick="loadSubagents()">Refresh</button></h2>
@@ -659,6 +663,18 @@
               <input id="ag-tdeny" placeholder="delete_issue, fs/write_file" />
             </label>
           </div>
+          <div class="row" style="margin-top:8px">
+            <label class="field">Before a tool runs
+              <select id="ag-tappr">
+                <option value="">Run it</option>
+                <option value="manual_for_writes">Ask me for tools that change things</option>
+                <option value="manual">Ask me for every tool</option>
+              </select>
+            </label>
+            <label class="field">Subagents the model may start
+              <input id="ag-tsubs" type="number" min="0" max="20" placeholder="0 = off" style="width:140px" />
+            </label>
+          </div>
           <span class="hint">Applies to tools the gateway runs (x-eay-mcp, subagents). Coding apps keep their own permission modes.</span>
         </details>
         <div class="row" style="margin-top:10px">
@@ -674,11 +690,12 @@
         </table></div>
       </div>
       <div class="card">
-        <h2>Session memory</h2>
-        <div class="row">
-          <input id="sess-id" placeholder="Session id" class="grow" />
-          <button class="ghost danger" onclick="deleteSession()">Forget session</button>
-        </div>
+        <h2>Sessions <button class="ghost" onclick="loadSessions()">Refresh</button></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Session</th><th>Owner</th><th>Messages</th><th>Updated</th><th></th></tr></thead>
+          <tbody id="sessions-body"></tbody>
+        </table></div>
+        <div id="session-detail"></div>
       </div>
     </section>
 
@@ -714,6 +731,18 @@
             </label>
             <label class="field grow">Never these
               <input id="key-tdeny" placeholder="delete_issue, fs/write_file" />
+            </label>
+          </div>
+          <div class="row" style="margin-top:8px">
+            <label class="field">Before a tool runs
+              <select id="key-tappr">
+                <option value="">Run it</option>
+                <option value="manual_for_writes">Ask me for tools that change things</option>
+                <option value="manual">Ask me for every tool</option>
+              </select>
+            </label>
+            <label class="field">Subagents the model may start
+              <input id="key-tsubs" type="number" min="0" max="20" placeholder="0 = off" style="width:140px" />
             </label>
           </div>
           <span class="hint">Applies to tools the gateway runs (x-eay-mcp, subagents). Coding apps keep their own permission modes.</span>
@@ -836,13 +865,13 @@
   let currentTab = 'overview';
   const loaders = {
     overview: () => loadOverview(),
-    activity: () => loadSubagents(),
+    activity: () => { loadSubagents(); loadApprovals(); },
     playground: () => { loadModels(); loadMcpServersForPlayground(); },
     providers: () => loadProviders(),
     mcp: () => loadMcp(),
     routing: () => { loadRouting(); loadModels(); },
     skills: () => loadSkills(),
-    agents: () => { loadAgents(); loadModels(); },
+    agents: () => { loadAgents(); loadModels(); loadSessions(); },
     keys: () => loadKeys(),
     clients: () => renderClients(),
   };
@@ -955,6 +984,7 @@
         activityEvents.unshift(ev);
         if (activityEvents.length > 300) activityEvents.pop();
         traceListeners.forEach((fn) => fn(ev));
+        if (['awaiting_approval', 'approved', 'denied'].includes(ev.phase)) loadApprovals();
         if (currentTab === 'activity') { renderActivity(); if (ev.id?.startsWith('sub_')) loadSubagents(); }
       }
     } catch (e) {
@@ -966,6 +996,26 @@
   function restartActivity() { activityAbort?.abort(); connectActivity(); }
 
   const FINISHED = ['completed', 'failed', 'cancelled'];
+  async function loadApprovals() {
+    const r = await api('/gateway/admin/approvals');
+    const list = r.data?.approvals || [];
+    $('#approvals-card').hidden = !list.length;
+    $('#nav-approvals').textContent = list.length ? `${list.length} to approve` : '';
+    $('#approvals-list').innerHTML = list.map((a) => `
+      <div style="border-top:1px solid var(--border);padding:10px 0">
+        <div class="row" style="justify-content:space-between">
+          <span><strong>${esc(a.tool)}</strong> <span class="mono dim">${esc(a.agent || a.run_id)}</span></span>
+          <span class="row">
+            <span class="hint">expires ${fmtTime(a.expires_at)}</span>
+            <button class="btn" onclick="answerApproval(${attr(a.id)}, true)">Approve</button>
+            <button class="ghost danger" onclick="answerApproval(${attr(a.id)}, false)">Deny</button>
+          </span>
+        </div>
+        <pre>${esc(JSON.stringify(a.arguments, null, 2))}</pre>
+      </div>`).join('');
+  }
+  const answerApproval = (id, approve) =>
+    act(api(`/gateway/admin/approvals/${encodeURIComponent(id)}`, { method: 'POST', body: { approve } }), approve ? 'Approved' : 'Denied', loadApprovals);
   const phasePill = (p) => `<span class="pill ${p === 'failed' ? 'bad' : FINISHED.includes(p) ? '' : 'on'}">${esc(p)}</span>`;
   async function loadSubagents() {
     renderActivity();
@@ -1377,17 +1427,23 @@
     const mode = $(`#${prefix}-tmode`).value; if (mode) p.mode = mode;
     const allow = csv($(`#${prefix}-tallow`).value); if (allow.length) p.allow = allow;
     const deny = csv($(`#${prefix}-tdeny`).value); if (deny.length) p.deny = deny;
+    const appr = $(`#${prefix}-tappr`).value; if (appr) p.approval = appr;
+    const subs = num(`#${prefix}-tsubs`); if (subs) p.max_subagents = subs;
     return p;
   }
   function fillPolicy(prefix, p = {}) {
     $(`#${prefix}-tmode`).value = p.mode && p.mode !== 'all' ? p.mode : '';
     $(`#${prefix}-tallow`).value = (p.allow || []).join(', ');
     $(`#${prefix}-tdeny`).value = (p.deny || []).join(', ');
+    $(`#${prefix}-tappr`).value = p.approval && p.approval !== 'auto' ? p.approval : '';
+    $(`#${prefix}-tsubs`).value = p.max_subagents || '';
   }
   const policySummary = (p) => !p ? '' : [
     p.mode === 'read_only' ? 'read-only tools' : p.mode === 'none' ? 'no tools' : '',
     p.allow?.length ? `tools: ${p.allow.join(', ')}` : '',
     p.deny?.length ? `not ${p.deny.join(', ')}` : '',
+    p.approval === 'manual' ? 'asks before every tool' : p.approval === 'manual_for_writes' ? 'asks before changes' : '',
+    p.max_subagents ? `up to ${p.max_subagents} subagents` : '',
   ].filter(Boolean).join(' · ');
 
   let agentsCache = [];
@@ -1425,10 +1481,36 @@
   }
   async function tryAgent() { if (await saveAgent()) tryModel('agent/' + $('#ag-name').value.trim()); }
   const deleteAgent = (n) => confirm(`Delete agent ${n}?`) && act(api(`/gateway/admin/agents/${encodeURIComponent(n)}`, { method: 'DELETE' }), 'Agent deleted', loadAgents);
-  async function deleteSession() {
-    const id = $('#sess-id').value.trim(); if (!id) return;
-    act(api(`/gateway/admin/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }), `Forgot session ${id}`);
+  async function loadSessions() {
+    const r = await api('/gateway/admin/sessions');
+    $('#sessions-body').innerHTML = (r.data?.sessions || []).map((s) => `
+      <tr>
+        <td class="mono">${esc(s.session)}</td>
+        <td class="mono dim">${esc(s.owner)}</td>
+        <td class="mono">${fmtN(s.messages)}</td>
+        <td class="mono dim">${ago(s.updated_at)}</td>
+        <td class="actions">
+          <button class="ghost" onclick="openSession(${attr(s.id)})">Open</button>
+          <button class="ghost danger" onclick="deleteSession(${attr(s.id)})">Forget</button>
+        </td>
+      </tr>`).join('') || emptyRow(5, 'No sessions yet. Send x-eay-session-id with a request to start one.');
   }
+  async function openSession(id) {
+    const r = await api(`/gateway/admin/sessions/${encodeURIComponent(id)}`);
+    if (!r.ok) return toast(errMsg(r), true);
+    const d = r.data;
+    const msgs = (d.messages || []).map((m) => `<div class="bubble ${m.role === 'user' ? 'user' : 'assistant'}" style="max-width:100%"><span class="meta">${esc(m.role)}</span>${esc(typeof m.content === 'string' ? m.content : JSON.stringify(m.content))}</div>`).join('');
+    const subs = (d.subagents || []).map((s) => `<div class="mono">${phasePill(s.phase)} ${esc(s.role)} <span class="dim">${esc(s.id)}</span></div>`).join('');
+    $('#session-detail').innerHTML = `
+      <div style="border-top:1px solid var(--border);margin-top:10px;padding-top:10px">
+        <div class="row" style="justify-content:space-between"><strong class="mono">${esc(d.session)}</strong><button class="ghost" onclick="$('#session-detail').innerHTML=''">Close</button></div>
+        ${subs ? `<div style="margin:8px 0"><span class="stat-label">Subagents</span>${subs}</div>` : ''}
+        <div style="display:flex;flex-direction:column;gap:8px;margin-top:8px;max-height:420px;overflow:auto">${msgs || '<span class="dim">No messages.</span>'}</div>
+      </div>`;
+  }
+  const deleteSession = (id) =>
+    confirm('Forget this session? The conversation history is deleted.') &&
+    act(api(`/gateway/admin/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Session forgotten', () => { $('#session-detail').innerHTML = ''; loadSessions(); });
 
   // ---- Keys -------------------------------------------------------------------
   async function loadKeys() {
