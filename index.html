@@ -63,6 +63,7 @@
     .g4 { grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); }
     .g2 { grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); }
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: 10px; padding: 16px 18px; margin-bottom: 14px; min-width: 0; }
+    .sub-head { font-size: 12px; font-weight: 600; margin: 0 0 8px; color: var(--muted); }
     .card > h2 { font-size: 13px; font-weight: 600; margin: 0 0 12px; display: flex; align-items: center; justify-content: space-between; gap: 8px; flex-wrap: wrap; }
     .stat-label { font: 11px var(--mono); color: var(--dim); text-transform: uppercase; letter-spacing: 0.05em; }
     .stat-val { font-size: 26px; font-weight: 700; margin-top: 4px; letter-spacing: -0.03em; font-variant-numeric: tabular-nums; }
@@ -261,6 +262,7 @@
       <div class="nav-group">Configure</div>
       <button class="tab-btn" data-tab="routing">Routing</button>
       <button class="tab-btn" data-tab="skills">Skills</button>
+      <button class="tab-btn" data-tab="projects">Projects</button>
       <button class="tab-btn" data-tab="agents">Agents</button>
       <button class="tab-btn" data-tab="keys">Keys</button>
       <button class="tab-btn" data-tab="clients">Use with apps</button>
@@ -477,6 +479,7 @@
                   <label class="field">Skills <input id="pg-skills" placeholder="rust-expert, …" /></label>
                   <label class="field">Session id (memory) <input id="pg-session" placeholder="none" /></label>
                   <label class="field">Team <input id="pg-team" placeholder="tm_… or a unique name" /></label>
+                  <label class="field">Project <select id="pg-project"><option value="">None</option></select></label>
                   <label class="field">Virtual key <input id="pg-key" type="password" placeholder="gw-sk-… (optional)" /></label>
                   <div class="toggles">
                     <label><input type="checkbox" id="pg-stream" checked /> Stream</label>
@@ -760,6 +763,33 @@
     </section>
 
     <!-- KEYS -->
+    <section id="tab-projects" class="panel">
+      <div class="page-head"><div><h1>Projects</h1><p>Group an app's keys, teams, sessions and usage under one id. Instructions reach every agent in the project.</p></div></div>
+      <div class="card">
+        <h2>Project editor <button class="ghost" onclick="newProject()">New</button></h2>
+        <input type="hidden" id="proj-id" />
+        <div class="row" style="margin-bottom:10px">
+          <input id="proj-name" placeholder="Name, e.g. shop" class="grow" />
+          <span class="mono dim" id="proj-id-label"></span>
+        </div>
+        <textarea id="proj-instructions" placeholder="Instructions for every agent in this project, e.g. This is a Rust web shop. Prefer small changes." style="min-height:90px"></textarea>
+        <label class="field" style="margin-top:8px">Metadata (JSON object, kept for your app; the gateway does not read it)
+          <textarea id="proj-metadata" placeholder='{"repo": "/code/shop"}' style="min-height:54px"></textarea>
+        </label>
+        <div class="row" style="margin-top:10px">
+          <button class="btn" onclick="saveProject()">Save project</button>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Projects <button class="ghost" onclick="loadProjects()">Refresh</button></h2>
+        <div class="table-wrap"><table>
+          <thead><tr><th>Name</th><th>Id</th><th>Instructions</th><th>Updated</th><th></th></tr></thead>
+          <tbody id="projects-body"></tbody>
+        </table></div>
+      </div>
+      <div class="card" id="proj-detail" hidden></div>
+    </section>
+
     <section id="tab-keys" class="panel">
       <div class="page-head"><div><h1>Keys</h1><p>Give each app its own <span class="mono">gw-sk-…</span> key with limits.</p></div></div>
       <div class="card">
@@ -926,7 +956,8 @@
   const loaders = {
     overview: () => loadOverview(),
     activity: () => { loadSubagents(); loadApprovals(); },
-    playground: () => { loadModels(); loadMcpServersForPlayground(); },
+    playground: () => { loadModels(); loadMcpServersForPlayground(); loadProjectChoices(); },
+    projects: () => loadProjects(),
     providers: () => loadProviders(),
     mcp: () => loadMcp(),
     routing: () => { loadRouting(); loadModels(); },
@@ -1755,6 +1786,111 @@
     act(api(`/gateway/sessions/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Session forgotten', () => { $('#session-detail').innerHTML = ''; loadSessions(); });
 
   // ---- Keys -------------------------------------------------------------------
+  // ---- Projects -----------------------------------------------------------------
+  let projectsCache = [];
+  async function loadProjects() {
+    const r = await api('/gateway/projects');
+    projectsCache = r.data?.projects || [];
+    $('#projects-body').innerHTML = projectsCache.map((p) => `
+      <tr>
+        <td>${esc(p.name)}</td>
+        <td class="mono dim">${esc(p.id)}</td>
+        <td class="dim">${esc((p.instructions || '').slice(0, 80))}${(p.instructions || '').length > 80 ? '…' : ''}</td>
+        <td class="mono dim">${ago(p.updated_at)}</td>
+        <td class="actions">
+          <button class="ghost" onclick="openProject(${attr(p.id)})">Open</button>
+          <button class="ghost" onclick="editProject(${attr(p.id)})">Edit</button>
+          <button class="ghost" onclick="chatInProject(${attr(p.id)})">Chat</button>
+          <button class="ghost danger" onclick="deleteProject(${attr(p.id)}, ${attr(p.name)})">Delete</button>
+        </td>
+      </tr>`).join('') || emptyRow(5, 'No projects yet. Create one above.');
+  }
+  function newProject() {
+    $('#proj-id').value = ''; $('#proj-id-label').textContent = '';
+    $('#proj-name').value = ''; $('#proj-instructions').value = ''; $('#proj-metadata').value = '';
+  }
+  function editProject(id) {
+    const p = projectsCache.find((x) => x.id === id); if (!p) return;
+    $('#proj-id').value = p.id; $('#proj-id-label').textContent = p.id;
+    $('#proj-name').value = p.name; $('#proj-instructions').value = p.instructions || '';
+    const meta = p.metadata && Object.keys(p.metadata).length ? JSON.stringify(p.metadata, null, 2) : '';
+    $('#proj-metadata').value = meta;
+    window.scrollTo({ top: 0, behavior: 'smooth' });
+  }
+  async function saveProject() {
+    const name = $('#proj-name').value.trim();
+    if (!name) return toast('Give the project a name.', true);
+    let metadata = {};
+    const raw = $('#proj-metadata').value.trim();
+    if (raw) { try { metadata = JSON.parse(raw); } catch { return toast('Metadata must be valid JSON.', true); } }
+    const body = { name, instructions: $('#proj-instructions').value, metadata };
+    const id = $('#proj-id').value;
+    const r = await act(
+      api(id ? `/gateway/projects/${encodeURIComponent(id)}` : '/gateway/projects', { method: id ? 'PUT' : 'POST', body }),
+      'Project saved', loadProjects);
+    if (r.ok && r.data?.project?.id) { $('#proj-id').value = r.data.project.id; $('#proj-id-label').textContent = r.data.project.id; }
+  }
+  const deleteProject = (id, name) =>
+    confirm(`Delete project ${name}? Its keys, teams, sessions and usage are kept, just no longer in a project.`) &&
+    act(api(`/gateway/projects/${encodeURIComponent(id)}`, { method: 'DELETE' }), 'Project deleted', () => { $('#proj-detail').hidden = true; loadProjects(); });
+  function chatInProject(id) {
+    showTab('playground');
+    loadProjectChoices().then(() => { $('#pg-project').value = id; });
+    $('#pg-session').value = $('#pg-session').value || `chat-${Math.random().toString(36).slice(2, 8)}`;
+  }
+  async function loadProjectChoices() {
+    const r = await api('/gateway/projects');
+    const sel = $('#pg-project'); const keep = sel.value;
+    sel.innerHTML = '<option value="">None</option>' + (r.data?.projects || []).map((p) => `<option value="${esc(p.id)}">${esc(p.name)} · ${esc(p.id)}</option>`).join('');
+    sel.value = keep;
+  }
+  async function openProject(id) {
+    const [d, u, keys, teams] = await Promise.all([
+      api(`/gateway/projects/${encodeURIComponent(id)}`), api(`/gateway/projects/${encodeURIComponent(id)}/usage?days=30`),
+      api('/gateway/keys'), api('/gateway/teams'),
+    ]);
+    if (!d.ok) return toast(errMsg(d), true);
+    const p = d.data.project; const t = u.data?.totals || {};
+    const linkedKeys = new Set((d.data.keys || []).map((k) => k.id));
+    const linkedTeams = new Set((d.data.teams || []).map((x) => x.id));
+    const otherKeys = (keys.data?.keys || []).filter((k) => !linkedKeys.has(k.id));
+    const otherTeams = (teams.data?.teams || []).filter((x) => !linkedTeams.has(x.id));
+    const usageRows = (list) => (list || []).map((x) => `<tr><td class="mono">${x.name ? esc(x.name) : '<span class="dim">(no agent)</span>'}</td><td class="mono">${fmtN(x.requests)}</td><td class="mono">${fmtN(x.tokens)}</td><td class="mono">${x.cost ? '$' + x.cost.toFixed(3) : '–'}</td></tr>`).join('') || emptyRow(4, 'Nothing yet.');
+    const box = $('#proj-detail'); box.hidden = false;
+    box.innerHTML = `
+      <h2>${esc(p.name)} <span class="mono dim">${esc(p.id)}</span> <button class="ghost" onclick="$('#proj-detail').hidden=true">Close</button></h2>
+      <div class="grid g4">
+        <div><div class="stat-label">Requests · 30d</div><div class="stat-val">${fmtN(t.requests)}</div></div>
+        <div><div class="stat-label">Tokens</div><div class="stat-val">${fmtN((t.input_tokens || 0) + (t.output_tokens || 0))}</div></div>
+        <div><div class="stat-label">Est. cost</div><div class="stat-val">$${(t.cost || 0).toFixed(2)}</div></div>
+        <div><div class="stat-label">Errors</div><div class="stat-val">${fmtN(t.errors)}</div></div>
+      </div>
+      <div class="grid g2" style="margin-top:12px">
+        <div><h3 class="sub-head">By agent</h3><div class="table-wrap"><table><thead><tr><th>Agent</th><th>Req</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>${usageRows(u.data?.agents)}</tbody></table></div></div>
+        <div><h3 class="sub-head">By model</h3><div class="table-wrap"><table><thead><tr><th>Model</th><th>Req</th><th>Tokens</th><th>Cost</th></tr></thead><tbody>${usageRows(u.data?.models)}</tbody></table></div></div>
+      </div>
+      <div class="grid g2" style="margin-top:12px">
+        <div>
+          <h3 class="sub-head">Keys</h3>
+          <div class="chips">${(d.data.keys || []).map((k) => `<span class="chip">${esc(k.name)} <span class="dim">${esc(k.key_prefix)}</span><button title="Remove from project" onclick="linkToProject('keys', ${attr(k.id)}, null, ${attr(p.id)})">×</button></span>`).join('') || '<span class="dim">No keys. A key linked here always runs in this project.</span>'}</div>
+          ${otherKeys.length ? `<div class="row" style="margin-top:8px"><select id="proj-add-key" class="grow">${otherKeys.map((k) => `<option value="${esc(k.id)}">${esc(k.name)} (${esc(k.key_prefix)})${k.project ? ' · in ' + esc(k.project) : ''}</option>`).join('')}</select><button class="ghost" onclick="linkToProject('keys', $('#proj-add-key').value, ${attr(p.id)}, ${attr(p.id)})">Add key</button></div>` : ''}
+        </div>
+        <div>
+          <h3 class="sub-head">Teams</h3>
+          <div class="chips">${(d.data.teams || []).map((x) => `<span class="chip">${esc(x.name)} <span class="dim">${esc(x.id)}</span><button title="Remove from project" onclick="linkToProject('teams', ${attr(x.id)}, null, ${attr(p.id)})">×</button></span>`).join('') || '<span class="dim">No teams yet.</span>'}</div>
+          ${otherTeams.length ? `<div class="row" style="margin-top:8px"><select id="proj-add-team" class="grow">${otherTeams.map((x) => `<option value="${esc(x.id)}">${esc(x.name)} (${esc(x.id)})${x.project ? ' · in ' + esc(x.project) : ''}</option>`).join('')}</select><button class="ghost" onclick="linkToProject('teams', $('#proj-add-team').value, ${attr(p.id)}, ${attr(p.id)})">Add team</button></div>` : ''}
+        </div>
+      </div>
+      <h3 class="sub-head" style="margin-top:14px">Sessions</h3>
+      <div class="chips">${(d.data.sessions || []).map((x) => `<span class="chip" style="padding-right:8px">${esc(x.session)} <span class="dim">${fmtN(x.messages)} msgs · ${ago(x.updated_at)}</span></span>`).join('') || '<span class="dim">No sessions yet. A session joins this project the first time a request uses both.</span>'}</div>`;
+    box.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+  async function linkToProject(kind, id, project, reopen) {
+    if (!id) return;
+    const r = await act(api(`/gateway/${kind}/${encodeURIComponent(id)}/project`, { method: 'PUT', body: { project } }), project ? 'Linked' : 'Removed');
+    if (r.ok) openProject(reopen);
+  }
+
   async function loadKeys() {
     const r = await api('/gateway/keys');
     $('#keys-body').innerHTML = (r.data?.keys || []).map((k) => {
@@ -1970,6 +2106,7 @@
     const skills = $('#pg-skills').value.trim(); if (skills) h['x-eay-skills'] = skills;
     const sess = $('#pg-session').value.trim(); if (sess) h['x-eay-session-id'] = sess;
     const team = $('#pg-team').value.trim(); if (team) h['x-eay-team'] = team;
+    const project = $('#pg-project').value; if (project) h['x-eay-project'] = project;
     if ($('#pg-redact').checked) h['x-eay-redact'] = 'true';
     if ($('#pg-mcp').checked) {
       const chosen = [...$('#pg-mcp-servers').selectedOptions].map((o) => o.value);
