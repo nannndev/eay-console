@@ -642,6 +642,25 @@
         </div>
         <input id="ag-desc" placeholder="Short description" style="width:100%;margin-bottom:10px" />
         <textarea id="ag-persona" placeholder="Personality, tone, standing instructions"></textarea>
+        <details class="sub" style="margin-top:8px">
+          <summary>MCP tools the gateway may run</summary>
+          <div class="row" style="margin-top:8px">
+            <label class="field">Mode
+              <select id="ag-tmode">
+                <option value="">All tools</option>
+                <option value="read_only">Read-only tools</option>
+                <option value="none">No tools</option>
+              </select>
+            </label>
+            <label class="field grow">Only these (empty = any)
+              <input id="ag-tallow" placeholder="github/*, fs/read_file" />
+            </label>
+            <label class="field grow">Never these
+              <input id="ag-tdeny" placeholder="delete_issue, fs/write_file" />
+            </label>
+          </div>
+          <span class="hint">Applies to tools the gateway runs (x-eay-mcp, subagents). Coding apps keep their own permission modes.</span>
+        </details>
         <div class="row" style="margin-top:10px">
           <button class="btn" onclick="saveAgent()">Save agent</button>
           <button class="ghost" onclick="tryAgent()">Try in playground</button>
@@ -680,6 +699,25 @@
           <input id="key-skills" placeholder="Default skills" class="grow" />
           <button class="btn" onclick="createKey()">Create key</button>
         </div>
+        <details class="sub" style="margin-top:8px">
+          <summary>MCP tools the gateway may run</summary>
+          <div class="row" style="margin-top:8px">
+            <label class="field">Mode
+              <select id="key-tmode">
+                <option value="">All tools</option>
+                <option value="read_only">Read-only tools</option>
+                <option value="none">No tools</option>
+              </select>
+            </label>
+            <label class="field grow">Only these (empty = any)
+              <input id="key-tallow" placeholder="github/*, fs/read_file" />
+            </label>
+            <label class="field grow">Never these
+              <input id="key-tdeny" placeholder="delete_issue, fs/write_file" />
+            </label>
+          </div>
+          <span class="hint">Applies to tools the gateway runs (x-eay-mcp, subagents). Coding apps keep their own permission modes.</span>
+        </details>
         <div id="new-key-secret" class="box" hidden></div>
       </div>
       <div class="card">
@@ -1333,6 +1371,25 @@
   }
 
   // ---- Agents -----------------------------------------------------------------
+  // Tool policy form <-> API object ({mode, allow, deny}); empty fields are left out.
+  function readPolicy(prefix) {
+    const p = {};
+    const mode = $(`#${prefix}-tmode`).value; if (mode) p.mode = mode;
+    const allow = csv($(`#${prefix}-tallow`).value); if (allow.length) p.allow = allow;
+    const deny = csv($(`#${prefix}-tdeny`).value); if (deny.length) p.deny = deny;
+    return p;
+  }
+  function fillPolicy(prefix, p = {}) {
+    $(`#${prefix}-tmode`).value = p.mode && p.mode !== 'all' ? p.mode : '';
+    $(`#${prefix}-tallow`).value = (p.allow || []).join(', ');
+    $(`#${prefix}-tdeny`).value = (p.deny || []).join(', ');
+  }
+  const policySummary = (p) => !p ? '' : [
+    p.mode === 'read_only' ? 'read-only tools' : p.mode === 'none' ? 'no tools' : '',
+    p.allow?.length ? `tools: ${p.allow.join(', ')}` : '',
+    p.deny?.length ? `not ${p.deny.join(', ')}` : '',
+  ].filter(Boolean).join(' · ');
+
   let agentsCache = [];
   async function loadAgents() {
     const r = await api('/gateway/admin/agents');
@@ -1342,7 +1399,7 @@
         <td class="mono">agent/${esc(a.name)}</td>
         <td class="mono">${esc(a.model)}${a.temperature != null ? ` <span class="dim">t=${esc(a.temperature)}</span>` : ''}</td>
         <td class="mono">${esc((a.skills || []).join(', ') || '–')}</td>
-        <td>${esc(a.description || '–')}</td>
+        <td>${esc(a.description || '–')}${policySummary(a.tool_policy) ? `<div class="mono dim">${esc(policySummary(a.tool_policy))}</div>` : ''}</td>
         <td class="actions">
           <button class="ghost" onclick="tryModel('agent/' + ${attr(a.name)})">Try</button>
           <button class="ghost" onclick="editAgent(${attr(a.name)})">Edit</button>
@@ -1354,12 +1411,14 @@
     const a = agentsCache.find((x) => x.name === n); if (!a) return;
     $('#ag-name').value = a.name; $('#ag-model').value = a.model; $('#ag-skills').value = (a.skills || []).join(', ');
     $('#ag-temp').value = a.temperature ?? ''; $('#ag-max').value = a.max_tokens ?? ''; $('#ag-desc').value = a.description || ''; $('#ag-persona').value = a.personality || '';
+    fillPolicy('ag', a.tool_policy);
     window.scrollTo({ top: 0, behavior: 'smooth' });
   }
   async function saveAgent() {
     const body = {
       name: $('#ag-name').value.trim(), model: $('#ag-model').value.trim() || 'auto', skills: csv($('#ag-skills').value),
       temperature: num('#ag-temp'), max_tokens: num('#ag-max'), description: $('#ag-desc').value.trim(), personality: $('#ag-persona').value.trim(),
+      tool_policy: readPolicy('ag'),
     };
     const r = await act(api('/gateway/admin/agents', { method: 'POST', body }), 'Agent saved', loadAgents);
     return r.ok;
@@ -1382,6 +1441,7 @@
         k.max_tokens_budget ? `${fmtN(used)} / ${fmtN(k.max_tokens_budget)} tok` : '',
         k.max_cost_usd ? `$${k.max_cost_usd}` : '',
         k.allowed_providers?.length ? `only ${k.allowed_providers.join(', ')}` : '',
+        policySummary(k.tool_policy),
       ].filter(Boolean).join(' · ') || 'none';
       return `<tr>
         <td>${esc(k.name)}</td>
@@ -1404,6 +1464,7 @@
       name: $('#key-name').value.trim() || 'default', rate_limit_per_min: num('#key-rpm'), max_tokens_budget: num('#key-tok'), max_cost_usd: num('#key-usd'),
       max_concurrent: num('#key-conc'),
       allowed_providers: providers.length ? providers : null, default_skills: skills.length ? skills : null,
+      tool_policy: readPolicy('key'),
     };
     const r = await act(api('/gateway/admin/keys', { method: 'POST', body }), 'Key created', loadKeys);
     if (r.ok && r.data.key?.key) {
